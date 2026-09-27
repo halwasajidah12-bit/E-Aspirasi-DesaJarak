@@ -5,7 +5,7 @@ export default function ProfilEditModal({ visible, profil, onClose, onSave }) {
   const [form, setForm] = useState(profil)
 
   useEffect(() => {
-    if (visible) setForm(profil)
+    if (visible) setForm({ ...profil, image: '/images/jarak.jpg' })
   }, [visible, profil])
 
   if (!visible) return null
