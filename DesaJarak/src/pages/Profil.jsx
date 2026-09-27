@@ -4,7 +4,7 @@ export default function Profil({ profil, onOpenEdit }) {
   return (
     <section className="space-y-3.5">
       <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 overflow-hidden">
-        <img src={profil.image} className="w-full h-40 xs:h-48 object-cover" alt="Foto Profil Desa" />
+        <img src="/images/jarak.jpg" className="w-full h-40 xs:h-48 object-cover" alt="Foto Profil Desa" />
         <div className="bg-gradient-to-r from-emerald-800 to-emerald-600 text-white p-4 flex items-center justify-between">
           <div className="space-y-0.5 min-w-0 pr-2">
             <h2 className="text-base font-bold truncate">Profil Desa {profil.namaDesa}</h2>
