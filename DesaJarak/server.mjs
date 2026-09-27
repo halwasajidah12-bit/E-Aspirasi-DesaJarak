@@ -5,7 +5,8 @@ import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import http from 'node:http'
 import pg from 'pg'
-import { initialProfilDesa, initialReports, initialNews, initialEdukasi } from './src/data/initialData.js'
+import { initialProfilDesa, initialReports, initialNews } from './src/data/initialData.js'
+import { initialEducationModules } from './src/data/education.js'
 import { beritaData } from './src/user/data/berita.js'
 import { edukasiList } from './src/user/data/edukasi.js'
 import { laporanData } from './src/user/data/laporan.js'
@@ -25,7 +26,16 @@ const pool = new Pool(process.env.DATABASE_URL ? {
   ssl: process.env.PGSSL === 'true' ? { rejectUnauthorized: false } : undefined,
 })
 
-const seedData = { profil: initialProfilDesa, reports: initialReports, news: initialNews, edukasi: initialEdukasi, userBerita: beritaData, userEdukasi: edukasiList, userLaporan: laporanData, userProfil: profilDesa }
+const categoryNames = ['Pembangunan Desa', 'Penggunaan Website', 'Pedoman Aspirasi', 'Syarat dan Ketentuan']
+const removeEducationIcons = (value) => {
+  if (Array.isArray(value)) return value.map(removeEducationIcons)
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => key !== 'icon')
+    .map(([key, nested]) => [key, removeEducationIcons(nested)]))
+}
+const seedEducation = removeEducationIcons(initialEducationModules)
+const seedData = { profil: initialProfilDesa, reports: initialReports, news: initialNews, edukasi: seedEducation, userBerita: beritaData, userEdukasi: edukasiList, userLaporan: laporanData, userProfil: profilDesa }
 const defaultNewsComments = new Set([
   'Semoga segera selesai dan bisa digunakan warga.',
   'Terima kasih informasinya.',
@@ -40,11 +50,12 @@ const countComments = (comments = []) => comments.reduce(
 const normalizeNewsComment = (comment, index, postId) => {
   const text = comment.text || comment.teks || ''
   if (!text || defaultNewsComments.has(text.trim())) return null
-  const name = comment.name || comment.nama || 'Warga Desa'
+  const originalName = comment.name || comment.nama || 'Warga Desa'
+  const name = originalName === 'Admin Desa' ? 'Admin Desa Jarak' : originalName
   return {
     id: comment.id || `${postId}-comment-${index}`,
     name,
-    role: comment.role || (name === 'Admin Desa' ? 'admin' : 'user'),
+    role: comment.role || (['Admin Desa', 'Admin Desa Jarak'].includes(originalName) ? 'admin' : 'user'),
     time: comment.time || comment.waktu || '',
     text,
     quotedName: comment.quotedName || '',
@@ -100,6 +111,27 @@ const mutateNews = async (mutator) => {
   }
 }
 
+const mutateEducation = async (mutator) => {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const result = await client.query('SELECT data_value FROM app_data WHERE data_key = $1 FOR UPDATE', ['edukasi'])
+    const outcome = mutator(result.rows[0]?.data_value || [])
+    if (!outcome) {
+      await client.query('ROLLBACK')
+      return null
+    }
+    await client.query('UPDATE app_data SET data_value = $1, updated_at = NOW() WHERE data_key = $2', [JSON.stringify(outcome.education), 'edukasi'])
+    await client.query('COMMIT')
+    return outcome.value
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
 const initDatabase = async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS app_data (data_key TEXT PRIMARY KEY, data_value JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
@@ -107,6 +139,15 @@ const initDatabase = async () => {
   `)
   for (const [key, value] of Object.entries(seedData)) {
     await pool.query('INSERT INTO app_data (data_key, data_value) VALUES ($1, $2) ON CONFLICT (data_key) DO NOTHING', [key, JSON.stringify(value)])
+  }
+  const storedEducation = await pool.query('SELECT data_value FROM app_data WHERE data_key = $1', ['edukasi'])
+  const currentEducation = storedEducation.rows[0]?.data_value || []
+  if (!currentEducation.length || !currentEducation.some((item) => item.slug && item.sections)) {
+    const migratedEducation = seedEducation.map((item) => ({ ...item, updatedAt: item.updatedAt || new Date().toISOString() }))
+    await pool.query('UPDATE app_data SET data_value = $1, updated_at = NOW() WHERE data_key = $2', [JSON.stringify(migratedEducation), 'edukasi'])
+  } else {
+    const normalizedEducation = removeEducationIcons(currentEducation).map((item) => ({ ...item, updatedAt: item.updatedAt || new Date().toISOString() }))
+    await pool.query('UPDATE app_data SET data_value = $1 WHERE data_key = $2', [JSON.stringify(normalizedEducation), 'edukasi'])
   }
   const storedNews = await pool.query('SELECT data_value FROM app_data WHERE data_key = $1', ['news'])
   const normalizedNews = migrateNews(storedNews.rows[0]?.data_value || [])
@@ -127,6 +168,63 @@ const initDatabase = async () => {
 
 const handleApi = async (request, response, pathname) => {
   if (request.method === 'GET' && pathname === '/api/health') return sendJson(response, 200, { ok: true })
+  if (request.method === 'GET' && pathname === '/api/education') {
+    const result = await pool.query('SELECT data_value FROM app_data WHERE data_key = $1', ['edukasi'])
+    return sendJson(response, 200, result.rows[0]?.data_value || [])
+  }
+  if (request.method === 'POST' && pathname === '/api/education') {
+    const body = await readJson(request)
+    if (!body.title || !body.desc || !body.content) return sendJson(response, 400, { message: 'Judul, ringkasan, dan isi edukasi wajib diisi.' })
+    const created = await mutateEducation((items) => {
+      const id = String(Date.now())
+      const slugBase = String(body.category || body.title).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+      const item = {
+        id,
+        slug: `${slugBase}-${id}`,
+        category: categoryNames.includes(body.category) ? body.category : 'Pembangunan Desa',
+        title: String(body.title).trim(),
+        desc: String(body.desc).trim(),
+        subtitle: String(body.subtitle || '').trim(),
+        content: String(body.content).trim(),
+        sections: [],
+        iconName: body.iconName || 'file-check',
+        image: body.image || '',
+        status: body.status === 'Publish' ? 'Publish' : 'Draft',
+        updatedAt: new Date().toISOString(),
+      }
+      return { education: [item, ...items], value: item }
+    })
+    return sendJson(response, 201, created)
+  }
+  if (request.method === 'PUT' && /^\/api\/education\/[^/]+$/.test(pathname)) {
+    const id = decodeURIComponent(pathname.slice('/api/education/'.length))
+    const updates = await readJson(request)
+    const allowed = ['category', 'title', 'desc', 'subtitle', 'content', 'status', 'image', 'iconName']
+    const updated = await mutateEducation((items) => {
+      const current = items.find((item) => String(item.id) === id || item.slug === id)
+      if (!current) return null
+      const nextItem = {
+        ...current,
+        ...Object.fromEntries(allowed.filter((key) => Object.hasOwn(updates, key)).map((key) => [key, updates[key]])),
+        updatedAt: new Date().toISOString(),
+      }
+      if (Object.hasOwn(updates, 'content')) nextItem.sections = []
+      if (Object.hasOwn(updates, 'category') && nextItem.category !== current.category) {
+        const base = String(nextItem.category).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+        nextItem.slug = `${base}-${nextItem.id}`
+      }
+      return { education: items.map((item) => item === current ? nextItem : item), value: nextItem }
+    })
+    return updated ? sendJson(response, 200, updated) : sendJson(response, 404, { message: 'Modul edukasi tidak ditemukan.' })
+  }
+  if (request.method === 'DELETE' && /^\/api\/education\/[^/]+$/.test(pathname)) {
+    const id = decodeURIComponent(pathname.slice('/api/education/'.length))
+    const deleted = await mutateEducation((items) => {
+      if (!items.some((item) => String(item.id) === id || item.slug === id)) return null
+      return { education: items.filter((item) => String(item.id) !== id && item.slug !== id), value: { id } }
+    })
+    return deleted ? sendJson(response, 200, deleted) : sendJson(response, 404, { message: 'Modul edukasi tidak ditemukan.' })
+  }
   if (request.method === 'GET' && pathname === '/api/news') {
     const result = await pool.query('SELECT data_value FROM app_data WHERE data_key = $1', ['news'])
     return sendJson(response, 200, result.rows[0]?.data_value || [])
@@ -179,7 +277,7 @@ const handleApi = async (request, response, pathname) => {
     const role = body.role === 'admin' ? 'admin' : 'user'
     const comment = {
       id: randomBytes(8).toString('hex'),
-      name: String(body.name || (role === 'admin' ? 'Admin Desa' : 'Warga Desa')).trim(),
+      name: String(body.name || (role === 'admin' ? 'Admin Desa Jarak' : 'Warga Desa')).trim(),
       role,
       time: new Date().toLocaleString('id-ID'),
       text,

@@ -15,8 +15,9 @@ import Laporan from './pages/Laporan.jsx'
 import Edukasi from './pages/Edukasi.jsx'
 import Berita from './pages/Berita.jsx'
 import Profil from './pages/Profil.jsx'
-import { initialProfilDesa, initialReports, initialNews, initialEdukasi } from './data/initialData.js'
-import { getAppData, saveAppData, getNews, createNews, updateNews, deleteNewsItem, addNewsComment } from './utils/api.js'
+import { initialProfilDesa, initialReports, initialNews } from './data/initialData.js'
+import { initialEducationModules, sortEducationModules } from './data/education.js'
+import { getAppData, saveAppData, getNews, createNews, updateNews, deleteNewsItem, addNewsComment, getEducation, createEducation, updateEducation, deleteEducationItem } from './utils/api.js'
 
 const DEFAULT_NEWS_IMAGE = 'https://images.unsplash.com/photo-1504384308090-c894fdcc538d?w=900&auto=format&fit=crop&q=80'
 
@@ -29,7 +30,7 @@ export default function AdminDashboard({ adminName, onLogout }) {
   const [profil, setProfil] = useState(initialProfilDesa)
   const [reports, setReports] = useState(initialReports)
   const [newsData, setNewsData] = useState(initialNews)
-  const [edukasiData, setEdukasiData] = useState(initialEdukasi)
+  const [edukasiData, setEdukasiData] = useState(() => sortEducationModules(initialEducationModules))
 
   useEffect(() => {
     getAppData()
@@ -37,7 +38,7 @@ export default function AdminDashboard({ adminName, onLogout }) {
         if (data.profil) setProfil(data.profil)
         if (data.reports) setReports(data.reports)
         if (data.news) setNewsData(data.news)
-        if (data.edukasi) setEdukasiData(data.edukasi)
+        if (data.edukasi) setEdukasiData(sortEducationModules(data.edukasi))
       })
       .catch((error) => showToast(`Database belum tersedia: ${error.message}`))
   }, [])
@@ -45,6 +46,7 @@ export default function AdminDashboard({ adminName, onLogout }) {
   useEffect(() => {
     const interval = setInterval(() => {
       getNews().then(setNewsData).catch(() => {})
+      getEducation().then((items) => setEdukasiData(sortEducationModules(items))).catch(() => {})
     }, 3000)
     return () => clearInterval(interval)
   }, [])
@@ -131,33 +133,41 @@ export default function AdminDashboard({ adminName, onLogout }) {
   }
   const editingEdukasiItem = edukasiData.find((e) => e.id === edukasiEditingId) || null
 
-  const saveEducation = (form, editId) => {
-    if (editId) {
-      const next = edukasiData.map((e) => (e.id === editId ? { ...e, ...form } : e))
-      setEdukasiData(next)
-      persist('edukasi', next)
-      showToast('Modul edukasi berhasil diperbarui.')
-    } else {
-      const next = [{ id: Date.now(), date: 'Baru saja', ...form }, ...edukasiData]
-      setEdukasiData(next)
-      persist('edukasi', next)
-      showToast('Modul edukasi berhasil ditambahkan.')
+  const saveEducation = async (form, editId) => {
+    try {
+      if (editId) {
+        const updated = await updateEducation(editId, form)
+        setEdukasiData((current) => sortEducationModules(current.map((item) => String(item.id) === String(editId) ? updated : item)))
+        showToast('Modul edukasi berhasil diperbarui.')
+      } else {
+        const created = await createEducation(form)
+        setEdukasiData((current) => sortEducationModules([created, ...current]))
+        showToast('Modul edukasi berhasil ditambahkan.')
+      }
+      setEdukasiModalOpen(false)
+    } catch (error) {
+      showToast(`Gagal menyimpan edukasi: ${error.message}`)
     }
-    setEdukasiModalOpen(false)
   }
 
-  const setEducationStatus = (id, status) => {
-    const next = edukasiData.map((e) => (e.id === id ? { ...e, status } : e))
-    setEdukasiData(next)
-    persist('edukasi', next)
-    showToast(status === 'Publish' ? 'Modul berhasil dipublish.' : 'Modul dipindahkan ke draft.')
+  const setEducationStatus = async (id, status) => {
+    try {
+      const updated = await updateEducation(id, { status })
+      setEdukasiData((current) => sortEducationModules(current.map((item) => String(item.id) === String(id) ? updated : item)))
+      showToast(status === 'Publish' ? 'Modul berhasil dipublish.' : 'Modul dipindahkan ke draft.')
+    } catch (error) {
+      showToast(`Gagal mengubah status edukasi: ${error.message}`)
+    }
   }
 
-  const deleteEdukasiModule = (id) => {
-    const next = edukasiData.filter((e) => e.id !== id)
-    setEdukasiData(next)
-    persist('edukasi', next)
-    showToast('Modul edukasi telah dihapus.')
+  const deleteEdukasiModule = async (id) => {
+    try {
+      await deleteEducationItem(id)
+      setEdukasiData((current) => current.filter((item) => String(item.id) !== String(id)))
+      showToast('Modul edukasi telah dihapus.')
+    } catch (error) {
+      showToast(`Gagal menghapus edukasi: ${error.message}`)
+    }
   }
 
   // --- Berita actions ---
@@ -217,7 +227,7 @@ export default function AdminDashboard({ adminName, onLogout }) {
 
   const replyToNewsComment = async (id, text, replyToId = null) => {
     try {
-      const updated = await addNewsComment(id, { name: 'Admin Desa', role: 'admin', text, replyToId })
+      const updated = await addNewsComment(id, { name: 'Admin Desa Jarak', role: 'admin', text, replyToId })
       setNewsData((current) => current.map((item) => String(item.id) === String(id) ? updated : item))
       showToast(replyToId ? 'Balasan admin berhasil ditambahkan.' : 'Komentar admin berhasil ditambahkan.')
     } catch (error) {

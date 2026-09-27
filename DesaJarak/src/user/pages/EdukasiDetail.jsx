@@ -1,20 +1,63 @@
+import { useEffect, useState } from "react";
 import { useParams, Navigate, Link } from "react-router-dom";
-import { CheckCircle2, Star } from "lucide-react";
+import { CheckCircle2, Star, Home, Users, FileCheck, Building2, Palette, Store } from "lucide-react";
 import PageHeader from "../components/PageHeader";
-import { edukasiList } from "../data/edukasi";
+import { initialEducationModules, sortEducationModules } from "../../data/education.js";
+import { getEducation } from "../../utils/api.js";
+
+const icons = { home: Home, users: Users, "file-check": FileCheck };
+const priorityIcons = { Infrastruktur: Building2, Budaya: Palette, UMKM: Store };
 
 export default function EdukasiDetail() {
   const { slug } = useParams();
-  const data = edukasiList.find((e) => e.slug === slug);
+  const [edukasiList, setEdukasiList] = useState(() => sortEducationModules(initialEducationModules));
+  const [loading, setLoading] = useState(true);
 
+  useEffect(() => {
+    let mounted = true;
+    const refreshEducation = () => {
+      getEducation()
+        .then((items) => {
+          if (mounted) {
+            setEdukasiList(sortEducationModules(items.filter((item) => item.status === "Publish")));
+            setLoading(false);
+          }
+        })
+        .catch(() => {
+          if (mounted) setLoading(false);
+        });
+    };
+    refreshEducation();
+    const interval = setInterval(refreshEducation, 3000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  const data = edukasiList.find((item) => item.slug === slug);
+
+  if (loading) return <div className="p-8 text-center text-sm text-gray-500">Memuat edukasi...</div>;
   if (!data) return <Navigate to="/edukasi" replace />;
 
   return (
     <div className="pb-8">
-      <PageHeader title={data.judul} subtitle={data.subtitle} />
+      <PageHeader title={data.title} subtitle={data.subtitle} />
 
       <div className="px-4 sm:px-6 -mt-[140px] space-y-5">
-        {data.sections.map((s, si) => (
+        {data.image && <img src={data.image} alt={data.title} className="w-full max-h-72 rounded-2xl object-cover" />}
+        {data.content ? (
+          <section className="space-y-3">
+            {data.content.split(/\n\s*\n/).filter(Boolean).map((block, index) => {
+              const lines = block.split("\n").filter(Boolean);
+              if (lines.every((line) => line.startsWith("- "))) {
+                return <ul key={index} className="space-y-2 list-disc pl-5 text-sm text-gray-700">{lines.map((line, lineIndex) => <li key={lineIndex}>{line.slice(2)}</li>)}</ul>;
+              }
+              if (block.startsWith("## ")) return <h2 key={index} className="font-bold text-gray-900">{block.slice(3)}</h2>;
+              return <p key={index} className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">{block}</p>;
+            })}
+          </section>
+        ) : data.sections?.map((s, si) => (
           <section key={si}>
             <h2 className="font-bold text-black mb-2">{s.heading}</h2>
 
@@ -30,7 +73,7 @@ export default function EdukasiDetail() {
                   <div key={i} className="border border-brand-200 rounded-2xl p-4">
                     <div className="flex items-center gap-2 mb-1.5">
                       <span className="h-8 w-8 rounded-full bg-brand-100 text-black-700 flex items-center justify-center shrink-0">
-                        <c.icon size={16} />
+                        {(() => { const Icon = c.icon || Users; return <Icon size={16} /> })()}
                       </span>
                       <span className="font-semibold text-sm text-black-800">{c.title}</span>
                     </div>
@@ -72,7 +115,7 @@ export default function EdukasiDetail() {
                 {s.priorities.map((p, i) => (
                   <div key={i} className="flex flex-col items-center text-center gap-1.5">
                     <span className="h-12 w-12 rounded-2xl bg-brand-700 text-white flex items-center justify-center">
-                      <p.icon size={22} />
+                      {(() => { const Icon = p.icon || priorityIcons[p.title] || FileCheck; return <Icon size={22} /> })()}
                     </span>
                     <p className="text-sm font-semibold text-black-800">{p.title}</p>
                     <p className="text-xs text-black-500 leading-snug">{p.desc}</p>

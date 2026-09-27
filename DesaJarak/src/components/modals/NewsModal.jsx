@@ -114,7 +114,7 @@ export default function NewsModal({ item, onClose, onSave, onDelete, onReply }) 
                       onClick={() => setReplyTarget(c)}
                       className="mt-1 text-[10px] font-semibold text-emerald-700 hover:underline"
                     >
-                      Kutip &amp; Balas
+                      Balas
                     </button>
                   )}
                   {(c.replies || []).map((reply) => (
