@@ -48,3 +48,17 @@ Untuk build produksi:
 npm run build
 npm run preview
 ```
+
+### Railway PostgreSQL
+
+Backend membaca koneksi dari environment variable Railway. Hubungkan service aplikasi ke service PostgreSQL menggunakan **Variable Reference**, atau isi variabel berikut pada service aplikasi:
+
+```text
+PGHOST=${{Postgres.PGHOST}}
+PGPORT=${{Postgres.PGPORT}}
+PGUSER=${{Postgres.PGUSER}}
+PGPASSWORD=${{Postgres.PGPASSWORD}}
+POSTGRES_DB=${{Postgres.POSTGRES_DB}}
+```
+
+`DATABASE_URL` juga didukung dan akan diprioritaskan jika tersedia. Saat pertama kali berjalan, server membuat tabel `users` dan `app_data`, lalu memasukkan data awal dari `src/data/initialData.js` dan `src/user/data/`. Jangan menaruh password database di source code atau repository.

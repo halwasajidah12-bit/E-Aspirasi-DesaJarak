@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from 'react'
+import { useState, useMemo, useRef, useEffect } from 'react'
 import Header from './components/Header.jsx'
 import ProfileMenu from './components/ProfileMenu.jsx'
 import BottomNav from './components/BottomNav.jsx'
@@ -16,6 +16,7 @@ import Edukasi from './pages/Edukasi.jsx'
 import Berita from './pages/Berita.jsx'
 import Profil from './pages/Profil.jsx'
 import { initialProfilDesa, initialReports, initialNews, initialEdukasi } from './data/initialData.js'
+import { getAppData, saveAppData } from './utils/api.js'
 
 const DEFAULT_NEWS_IMAGE = 'https://images.unsplash.com/photo-1504384308090-c894fdcc538d?w=900&auto=format&fit=crop&q=80'
 
@@ -29,6 +30,21 @@ export default function AdminDashboard({ adminName, onLogout }) {
   const [reports, setReports] = useState(initialReports)
   const [newsData, setNewsData] = useState(initialNews)
   const [edukasiData, setEdukasiData] = useState(initialEdukasi)
+
+  useEffect(() => {
+    getAppData()
+      .then((data) => {
+        if (data.profil) setProfil(data.profil)
+        if (data.reports) setReports(data.reports)
+        if (data.news) setNewsData(data.news)
+        if (data.edukasi) setEdukasiData(data.edukasi)
+      })
+      .catch((error) => showToast(`Database belum tersedia: ${error.message}`))
+  }, [])
+
+  const persist = (key, value) => {
+    saveAppData(key, value).catch((error) => showToast(`Gagal menyimpan ke database: ${error.message}`))
+  }
 
   // Header / account
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
@@ -71,7 +87,9 @@ export default function AdminDashboard({ adminName, onLogout }) {
 
   // --- Report actions ---
   const updateReportStatus = (reportId, newStatus) => {
-    setReports((prev) => prev.map((r) => (r.id === reportId ? { ...r, status: newStatus } : r)))
+    const next = reports.map((r) => (r.id === reportId ? { ...r, status: newStatus } : r))
+    setReports(next)
+    persist('reports', next)
     showToast(`Status laporan ${reportId} diubah menjadi "${newStatus}"`)
   }
 
@@ -80,7 +98,9 @@ export default function AdminDashboard({ adminName, onLogout }) {
   const activeReport = reports.find((r) => r.id === activeReportId) || null
 
   const saveReportDetail = (reportId, status, reply) => {
-    setReports((prev) => prev.map((r) => (r.id === reportId ? { ...r, status, officialReply: reply } : r)))
+    const next = reports.map((r) => (r.id === reportId ? { ...r, status, officialReply: reply } : r))
+    setReports(next)
+    persist('reports', next)
     showToast(`Laporan ${reportId} berhasil diperbarui!`)
     closeReportDetail()
   }
@@ -88,6 +108,7 @@ export default function AdminDashboard({ adminName, onLogout }) {
   // --- Profil actions ---
   const saveProfil = (form) => {
     setProfil(form)
+    persist('profil', form)
     setProfilEditOpen(false)
     showToast('Profil dan Data Desa berhasil diperbarui!')
   }
@@ -105,22 +126,30 @@ export default function AdminDashboard({ adminName, onLogout }) {
 
   const saveEducation = (form, editId) => {
     if (editId) {
-      setEdukasiData((prev) => prev.map((e) => (e.id === editId ? { ...e, ...form } : e)))
+      const next = edukasiData.map((e) => (e.id === editId ? { ...e, ...form } : e))
+      setEdukasiData(next)
+      persist('edukasi', next)
       showToast('Modul edukasi berhasil diperbarui.')
     } else {
-      setEdukasiData((prev) => [{ id: Date.now(), date: 'Baru saja', ...form }, ...prev])
+      const next = [{ id: Date.now(), date: 'Baru saja', ...form }, ...edukasiData]
+      setEdukasiData(next)
+      persist('edukasi', next)
       showToast('Modul edukasi berhasil ditambahkan.')
     }
     setEdukasiModalOpen(false)
   }
 
   const setEducationStatus = (id, status) => {
-    setEdukasiData((prev) => prev.map((e) => (e.id === id ? { ...e, status } : e)))
+    const next = edukasiData.map((e) => (e.id === id ? { ...e, status } : e))
+    setEdukasiData(next)
+    persist('edukasi', next)
     showToast(status === 'Publish' ? 'Modul berhasil dipublish.' : 'Modul dipindahkan ke draft.')
   }
 
   const deleteEdukasiModule = (id) => {
-    setEdukasiData((prev) => prev.filter((e) => e.id !== id))
+    const next = edukasiData.filter((e) => e.id !== id)
+    setEdukasiData(next)
+    persist('edukasi', next)
     showToast('Modul edukasi telah dihapus.')
   }
 
@@ -128,7 +157,7 @@ export default function AdminDashboard({ adminName, onLogout }) {
   const generateAiNewsScript = ({ topic, category, image }) => {
     showToast('Sedang menyusun draf berita AI...')
     setTimeout(() => {
-      setNewsData((prev) => [
+      const next = [
         {
           id: Date.now(),
           title: topic,
@@ -140,8 +169,10 @@ export default function AdminDashboard({ adminName, onLogout }) {
           content: `Draf berita AI mengenai ${topic}. Silakan edit isi berita sebelum dipublikasikan.`,
           commentsList: [],
         },
-        ...prev,
-      ])
+          ...newsData,
+      ]
+      setNewsData(next)
+      persist('news', next)
       showToast('Draf berita AI berhasil dibuat. Silakan edit atau publish.')
     }, image ? 0 : 500)
   }
@@ -151,37 +182,36 @@ export default function AdminDashboard({ adminName, onLogout }) {
   const activeNews = newsData.find((n) => n.id === activeNewsId) || null
 
   const saveNewsEdit = (form) => {
-    setNewsData((prev) => prev.map((n) => (n.id === form.id ? { ...n, ...form } : n)))
+    const next = newsData.map((n) => (n.id === form.id ? { ...n, ...form } : n))
+    setNewsData(next)
+    persist('news', next)
     showToast('Berita berhasil diperbarui.')
     closeNewsModal()
   }
 
   const setNewsStatus = (id, status) => {
-    setNewsData((prev) => prev.map((n) => (n.id === id ? { ...n, status } : n)))
+    const next = newsData.map((n) => (n.id === id ? { ...n, status } : n))
+    setNewsData(next)
+    persist('news', next)
     showToast(status === 'Tayang' ? 'Berita berhasil dipublish.' : 'Berita dipindahkan ke draft.')
   }
 
   const deleteNews = (id) => {
-    setNewsData((prev) => prev.filter((n) => n.id !== id))
+    const next = newsData.filter((n) => n.id !== id)
+    setNewsData(next)
+    persist('news', next)
     showToast('Berita berhasil dihapus.')
     closeNewsModal()
   }
 
   const replyToNewsComment = (id, text) => {
-    setNewsData((prev) =>
-      prev.map((n) => {
-        if (n.id !== id) return n
-        const commentsList = [
-          ...(n.commentsList || []),
-          {
-            name: 'Admin Desa',
-            time: new Date().toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
-            text,
-          },
-        ]
-        return { ...n, commentsList, comments: commentsList.length }
-      })
-    )
+    const next = newsData.map((n) => {
+      if (n.id !== id) return n
+      const commentsList = [...(n.commentsList || []), { name: 'Admin Desa', time: new Date().toLocaleString('id-ID'), text }]
+      return { ...n, commentsList, comments: commentsList.length }
+    })
+    setNewsData(next)
+    persist('news', next)
     showToast('Tanggapan admin berhasil ditambahkan.')
   }
 

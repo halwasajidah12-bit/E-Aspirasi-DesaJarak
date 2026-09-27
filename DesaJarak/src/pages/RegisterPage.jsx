@@ -7,7 +7,7 @@ export default function RegisterPage({ onRegister, onGoLogin, onGoogleClick }) {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState('')
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault()
     if (!fullname.trim() || !username.trim() || !password.trim()) {
       setError('Semua kolom wajib diisi.')
@@ -17,9 +17,11 @@ export default function RegisterPage({ onRegister, onGoLogin, onGoogleClick }) {
       setError('Konfirmasi password tidak sama.')
       return
     }
-    const result = onRegister({ fullname: fullname.trim(), username: username.trim(), password })
-    if (!result?.success) {
-      setError(result?.message || 'Registrasi gagal, silakan coba lagi.')
+    try {
+      const result = await onRegister({ fullname: fullname.trim(), username: username.trim(), password })
+      if (!result?.success) setError(result?.message || 'Registrasi gagal, silakan coba lagi.')
+    } catch (requestError) {
+      setError(requestError.message)
     }
   }
 

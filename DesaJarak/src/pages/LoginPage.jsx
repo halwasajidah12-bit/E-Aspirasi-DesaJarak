@@ -6,15 +6,17 @@ export default function LoginPage({ onLogin, onGuest, onGoRegister, onGoogleClic
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault()
     if (!username.trim() || !password.trim()) {
       setError('Username dan password wajib diisi.')
       return
     }
-    const result = onLogin({ username: username.trim(), password })
-    if (!result?.success) {
-      setError(result?.message || 'Username atau password salah.')
+    try {
+      const result = await onLogin({ username: username.trim(), password })
+      if (!result?.success) setError(result?.message || 'Username atau password salah.')
+    } catch (requestError) {
+      setError(requestError.message)
     }
   }
 

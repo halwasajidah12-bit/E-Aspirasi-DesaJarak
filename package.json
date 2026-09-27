@@ -1,0 +1,12 @@
+{
+  "name": "e-aspirasi-railway",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "build": "npm --prefix DesaJarak install --no-audit --no-fund && npm --prefix DesaJarak run build",
+    "start": "npm --prefix DesaJarak run start"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

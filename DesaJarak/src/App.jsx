@@ -1,52 +1,28 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { login, register } from './utils/api.js'
 import LoginPage from './pages/LoginPage.jsx'
 import RegisterPage from './pages/RegisterPage.jsx'
 import UserApp from './user/App.jsx'
 import AdminDashboard from './AdminDashboard.jsx'
-
-// Dummy backend — the ONLY admin account. Admin accounts can never be
-// created through the register page; they only exist here, seeded by the program.
-const ADMIN_CREDENTIALS = { username: 'admin', password: 'admin' }
 
 export default function App() {
   const navigate = useNavigate()
   const [screen, setScreen] = useState('login') // 'login' | 'register' | 'admin' | 'user'
   const [session, setSession] = useState(null) // { role: 'admin' | 'user' | 'guest', name }
 
-  // Dummy in-memory "database" of registered citizen (user) accounts.
-  // One sample account is pre-seeded so the login flow can be tried immediately:
-  // username "warga" / password "warga".
-  const [registeredUsers, setRegisteredUsers] = useState([
-    { username: 'warga', password: 'warga', fullname: 'Warga Desa' },
-  ])
-
-  const handleLogin = ({ username, password }) => {
-    if (username === ADMIN_CREDENTIALS.username && password === ADMIN_CREDENTIALS.password) {
-      setSession({ role: 'admin', name: 'Admin Desa' })
-      setScreen('admin')
-      return { success: true }
-    }
-
-    const found = registeredUsers.find((u) => u.username === username && u.password === password)
-    if (found) {
-      setSession({ role: 'user', name: found.fullname || found.username })
-      setScreen('user')
-      return { success: true }
-    }
-
-    return { success: false, message: 'Username atau password salah.' }
+  const handleLogin = async (credentials) => {
+    const result = await login(credentials)
+    setSession({ role: result.role, name: result.name })
+    setScreen(result.role === 'admin' ? 'admin' : 'user')
+    return result
   }
 
-  const handleRegister = ({ fullname, username, password }) => {
-    if (username === ADMIN_CREDENTIALS.username || registeredUsers.some((u) => u.username === username)) {
-      return { success: false, message: 'Username sudah digunakan, silakan pilih username lain.' }
-    }
-    const newUser = { fullname, username, password }
-    setRegisteredUsers((prev) => [...prev, newUser])
-    setSession({ role: 'user', name: fullname || username })
+  const handleRegister = async (credentials) => {
+    const result = await register(credentials)
+    setSession({ role: 'user', name: result.name })
     setScreen('user')
-    return { success: true }
+    return result
   }
 
   const handleGuest = () => {

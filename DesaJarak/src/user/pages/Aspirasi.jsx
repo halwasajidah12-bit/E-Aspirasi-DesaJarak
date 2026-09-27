@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, ScanLine, Camera } from "lucide-react";
+import { createReport } from "../../utils/api.js";
 
 const steps = ["Lokasi", "Detail", "Foto"];
 const kategoriList = ["Jalan", "Jembatan", "Listrik", "Air", "Drainase", "Lainya"];
@@ -42,6 +43,7 @@ export default function Aspirasi() {
     deskripsi: "",
   });
   const navigate = useNavigate();
+  const [submitting, setSubmitting] = useState(false);
 
   const update = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
 
@@ -185,12 +187,22 @@ export default function Aspirasi() {
             </button>
           )}
           <button
-            onClick={() => (step < 2 ? setStep((s) => s + 1) : navigate("/lacak"))}
+            onClick={async () => {
+              if (step < 2) return setStep((s) => s + 1)
+              setSubmitting(true)
+              try {
+                await createReport(form)
+                navigate("/lacak")
+              } finally {
+                setSubmitting(false)
+              }
+            }}
+            disabled={submitting}
             className={`flex-1 rounded-full bg-brand-700 text-white py-2.5 font-semibold ${
               step === 0 ? "w-full" : ""
             }`}
           >
-            {step < 2 ? "Lanjutkan" : "Kirim Laporan"}
+            {submitting ? "Mengirim..." : step < 2 ? "Lanjutkan" : "Kirim Laporan"}
           </button>
         </div>
       </div>
