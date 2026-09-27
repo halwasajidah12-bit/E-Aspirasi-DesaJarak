@@ -20,6 +20,18 @@ export const register = (user) => jsonRequest('/auth/register', {
 
 export const getAppData = () => jsonRequest('/data')
 
+export const getReports = () => jsonRequest('/reports')
+
+export const updateReport = (id, updates) => jsonRequest(`/reports/${encodeURIComponent(id)}`, {
+  method: 'PUT',
+  body: JSON.stringify(updates),
+})
+
+export const addReportComment = (id, comment) => jsonRequest(`/reports/${encodeURIComponent(id)}/comments`, {
+  method: 'POST',
+  body: JSON.stringify(comment),
+})
+
 export const getEducation = () => jsonRequest('/education')
 
 export const createEducation = (education) => jsonRequest('/education', {
@@ -62,7 +74,7 @@ export const saveAppData = (key, value) => jsonRequest(`/data/${key}`, {
   body: JSON.stringify({ value }),
 })
 
-export const createReport = (report) => jsonRequest('/reports', {
+export const createReport = (report, owner) => jsonRequest('/reports', {
   method: 'POST',
-  body: JSON.stringify(report),
+  body: JSON.stringify({ ...report, ...owner }),
 })

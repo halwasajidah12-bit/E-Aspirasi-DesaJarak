@@ -1,41 +1,58 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
   MapPin,
   Calendar,
-  Clock,
   ThumbsUp,
   Share2,
   CheckCircle2,
   Image as ImageIcon,
+  MessageCircle,
 } from "lucide-react";
-import { laporanData } from "../data/laporan";
+import { mapApiReport } from "../data/laporan";
+import { addReportComment, getReports } from "../../utils/api.js";
 
 const statusStyle = {
   Selesai: "bg-emerald-100 text-emerald-700",
   Diproses: "bg-amber-100 text-amber-700",
   Masuk: "bg-sky-100 text-sky-700",
+  Ditolak: "bg-rose-100 text-rose-700",
 };
 
-const alur = [
-  { label: "Masuk", desc: "Laporan berhasil masuk ke sistem desa" },
-  { label: "Diproses", desc: "Petugas sedang menindaklanjuti laporan" },
-  { label: "Selesai", desc: "Laporan telah selesai ditangani" },
-];
-
-export default function DetailLaporan() {
+export default function DetailLaporan({ session }) {
   const { id } = useParams();
   const navigate = useNavigate();
+  const [report, setReport] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [commentText, setCommentText] = useState("");
+  const [commentError, setCommentError] = useState("");
+  const [sendingComment, setSendingComment] = useState(false);
 
-  const report = laporanData.find(
-    (l) => String(l.id).replace("#", "") === String(id).replace("#", "")
-  );
+  useEffect(() => {
+    let mounted = true;
+    const refreshReport = () => {
+      getReports()
+        .then((items) => {
+          const item = items.find((entry) => String(entry.id).replace("#", "") === String(id).replace("#", ""));
+          if (mounted) {
+            setReport(item ? mapApiReport(item) : null);
+            setLoading(false);
+          }
+        })
+        .catch(() => {
+          if (mounted) setLoading(false);
+        });
+    };
+    refreshReport();
+    const interval = setInterval(refreshReport, 3000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [id]);
 
-  const angkaAwal =
-    Number(
-      String(report?.dukungan ?? report?.dukunganWarga ?? "").replace(/\D/g, "")
-    ) || 0;
+  const angkaAwal = Number(report?.dukungan) || 0;
 
   const [didukung, setDidukung] = useState(false);
   const [dukungan, setDukungan] = useState(angkaAwal);
@@ -62,6 +79,28 @@ export default function DetailLaporan() {
       alert("Tautan laporan disalin.");
     }
   };
+
+  const kirimKomentar = async (event) => {
+    event.preventDefault();
+    if (!commentText.trim()) return;
+    setSendingComment(true);
+    setCommentError("");
+    try {
+      const updated = await addReportComment(report.id, {
+        ownerId: session?.userId,
+        name: session?.name || "Warga Desa",
+        text: commentText.trim(),
+      });
+      setReport(mapApiReport(updated));
+      setCommentText("");
+    } catch (error) {
+      setCommentError(error.message || "Komentar gagal dikirim.");
+    } finally {
+      setSendingComment(false);
+    }
+  };
+
+  if (loading) return <div className="p-8 text-center text-sm text-gray-500">Memuat laporan...</div>;
 
   if (!report) {
     return (
@@ -91,8 +130,9 @@ export default function DetailLaporan() {
     );
   }
 
-  const activeStep =
-    report.status === "Selesai" ? 2 : report.status === "Diproses" ? 1 : 0;
+  const history = report.statusHistory.length
+    ? report.statusHistory
+    : [{ status: report.status, time: "", reply: report.tanggapan }];
 
   return (
     <div className="pb-8">
@@ -202,39 +242,61 @@ export default function DetailLaporan() {
             Status Penanganan
           </p>
           <div className="relative">
-            {alur.map((s, i) => {
-              const done = i <= activeStep;
+            {history.map((entry, i) => {
+              const last = i === history.length - 1;
               return (
-                <div key={s.label} className="relative flex gap-3 pb-5 last:pb-0">
-                  {i < alur.length - 1 && (
+                <div key={`${entry.time}-${i}`} className="relative flex gap-3 pb-5 last:pb-0">
+                  {!last && (
                     <span
-                      className={`absolute left-[11px] top-6 bottom-0 w-px ${
-                        i < activeStep ? "bg-brand-700" : "bg-gray-200"
-                      }`}
+                      className="absolute left-[11px] top-6 bottom-0 w-px bg-brand-200"
                     />
                   )}
                   <span
-                    className={`relative z-10 h-6 w-6 rounded-full flex items-center justify-center shrink-0 ${
-                      done ? "bg-brand-700 text-white" : "bg-gray-200 text-gray-400"
-                    }`}
+                    className="relative z-10 h-6 w-6 rounded-full flex items-center justify-center shrink-0 bg-brand-700 text-white"
                   >
-                    {done ? <CheckCircle2 size={14} /> : <Clock size={13} />}
+                    <CheckCircle2 size={14} />
                   </span>
                   <div>
-                    <p
-                      className={`text-sm font-semibold ${
-                        done ? "text-gray-800" : "text-gray-400"
-                      }`}
-                    >
-                      {s.label}
-                    </p>
-                    <p className="text-xs text-gray-400 mt-0.5">{s.desc}</p>
+                    <p className="text-sm font-semibold text-gray-800">{entry.status}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">{entry.time ? new Date(entry.time).toLocaleString("id-ID") : "Status terkini"}</p>
+                    {entry.reply && <p className="mt-1 rounded-xl bg-mint-50 p-2 text-xs text-gray-600">Tanggapan admin: {entry.reply}</p>}
                   </div>
                 </div>
               );
             })}
           </div>
         </div>
+
+        <section className="mt-6 rounded-2xl border border-gray-100 p-4">
+          <div className="flex items-center justify-between gap-2 mb-3">
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-800"><MessageCircle size={17} className="text-brand-700" /> Komentar Warga</h3>
+            <span className="text-xs text-gray-400">{report.komentar.length} komentar</span>
+          </div>
+          <div className="space-y-2">
+            {report.komentar.map((comment) => (
+              <article key={comment.id} className="rounded-xl bg-gray-50 p-3">
+                <div className="flex justify-between gap-2 text-xs">
+                  <span className="font-semibold text-gray-800">{comment.name}</span>
+                  <time className="text-gray-400">{comment.time}</time>
+                </div>
+                <p className="mt-1 text-sm text-gray-600">{comment.text}</p>
+              </article>
+            ))}
+            {!report.komentar.length && <p className="py-3 text-center text-sm text-gray-400">Belum ada komentar.</p>}
+          </div>
+          {commentError && <p className="mt-2 text-xs text-rose-600">{commentError}</p>}
+          <form onSubmit={kirimKomentar} className="mt-3 flex gap-2">
+            <input
+              value={commentText}
+              onChange={(event) => setCommentText(event.target.value)}
+              placeholder="Tulis komentar atau masukan warga..."
+              className="input min-w-0 flex-1"
+            />
+            <button disabled={sendingComment || !commentText.trim()} className="shrink-0 rounded-full bg-brand-700 px-4 text-sm font-semibold text-white disabled:opacity-50">
+              {sendingComment ? "Mengirim..." : "Kirim"}
+            </button>
+          </form>
+        </section>
 
         <div className="flex gap-3 mt-6">
           <button

@@ -30,7 +30,7 @@ function Stepper({ current }) {
   );
 }
 
-export default function Aspirasi() {
+export default function Aspirasi({ session }) {
   const [step, setStep] = useState(0);
   const [form, setForm] = useState({
     lokasi: "",
@@ -191,7 +191,7 @@ export default function Aspirasi() {
               if (step < 2) return setStep((s) => s + 1)
               setSubmitting(true)
               try {
-                await createReport(form)
+                await createReport(form, { ownerId: session?.userId, ownerName: session?.name })
                 navigate("/lacak")
               } finally {
                 setSubmitting(false)

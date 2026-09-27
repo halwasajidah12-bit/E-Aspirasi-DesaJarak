@@ -17,7 +17,7 @@ import Berita from './pages/Berita.jsx'
 import Profil from './pages/Profil.jsx'
 import { initialProfilDesa, initialReports, initialNews } from './data/initialData.js'
 import { initialEducationModules, sortEducationModules } from './data/education.js'
-import { getAppData, saveAppData, getNews, createNews, updateNews, deleteNewsItem, addNewsComment, getEducation, createEducation, updateEducation, deleteEducationItem } from './utils/api.js'
+import { getAppData, saveAppData, getReports, updateReport, getNews, createNews, updateNews, deleteNewsItem, addNewsComment, getEducation, createEducation, updateEducation, deleteEducationItem } from './utils/api.js'
 
 const DEFAULT_NEWS_IMAGE = 'https://images.unsplash.com/photo-1504384308090-c894fdcc538d?w=900&auto=format&fit=crop&q=80'
 
@@ -45,6 +45,7 @@ export default function AdminDashboard({ adminName, onLogout }) {
 
   useEffect(() => {
     const interval = setInterval(() => {
+      getReports().then(setReports).catch(() => {})
       getNews().then(setNewsData).catch(() => {})
       getEducation().then((items) => setEdukasiData(sortEducationModules(items))).catch(() => {})
     }, 3000)
@@ -95,23 +96,29 @@ export default function AdminDashboard({ adminName, onLogout }) {
   }, [reports])
 
   // --- Report actions ---
-  const updateReportStatus = (reportId, newStatus) => {
-    const next = reports.map((r) => (r.id === reportId ? { ...r, status: newStatus } : r))
-    setReports(next)
-    persist('reports', next)
-    showToast(`Status laporan ${reportId} diubah menjadi "${newStatus}"`)
+  const updateReportStatus = async (reportId, newStatus) => {
+    try {
+      const updated = await updateReport(reportId, { status: newStatus })
+      setReports((current) => current.map((report) => report.id === reportId ? updated : report))
+      showToast(`Status laporan ${reportId} diubah menjadi "${newStatus}"`)
+    } catch (error) {
+      showToast(`Gagal mengubah status laporan: ${error.message}`)
+    }
   }
 
   const openReportDetail = (reportId) => setActiveReportId(reportId)
   const closeReportDetail = () => setActiveReportId(null)
   const activeReport = reports.find((r) => r.id === activeReportId) || null
 
-  const saveReportDetail = (reportId, status, reply) => {
-    const next = reports.map((r) => (r.id === reportId ? { ...r, status, officialReply: reply } : r))
-    setReports(next)
-    persist('reports', next)
-    showToast(`Laporan ${reportId} berhasil diperbarui!`)
-    closeReportDetail()
+  const saveReportDetail = async (reportId, status, reply) => {
+    try {
+      const updated = await updateReport(reportId, { status, officialReply: reply })
+      setReports((current) => current.map((report) => report.id === reportId ? updated : report))
+      showToast(`Laporan ${reportId} berhasil diperbarui!`)
+      closeReportDetail()
+    } catch (error) {
+      showToast(`Gagal memperbarui laporan: ${error.message}`)
+    }
   }
 
   // --- Profil actions ---

@@ -1,19 +1,33 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
+import { getReports } from "../../utils/api.js";
+import { mapApiReport } from "../data/laporan";
 
-const tabs = ["Semua", "Aspirasi", "Vote", "Komentar"];
+const tabs = ["Semua", "Masuk", "Diproses", "Selesai", "Ditolak"];
 
-const items = [
-  { tag: "Laporan", judul: "Kehilangan KTP", tanggal: "5 Sep 2026" },
-  { tag: "Komentar", judul: "Antusias Warga pada Lomba Agustus", tanggal: "18 Agustus 2026" },
-  { tag: "Vote", judul: "Pelatihan UMKM Desa Diikuti 85 Peserta", tanggal: "2 Agustus 2026" },
-];
-
-const tagFor = { Laporan: "Aspirasi", Komentar: "Komentar", Vote: "Vote" };
-
-export default function Riwayat() {
+export default function Riwayat({ session }) {
   const [tab, setTab] = useState("Semua");
-  const filtered = items.filter((i) => tab === "Semua" || tagFor[i.tag] === tab);
+  const [reports, setReports] = useState([]);
+
+  useEffect(() => {
+    let mounted = true;
+    const refreshReports = () => {
+      getReports()
+        .then((items) => {
+          if (mounted) setReports(items.map(mapApiReport).filter((item) => item.ownerId === session?.userId));
+        })
+        .catch(() => {});
+    };
+    refreshReports();
+    const interval = setInterval(refreshReports, 3000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [session?.userId]);
+
+  const filtered = reports.filter((report) => tab === "Semua" || report.status === tab);
 
   return (
     <div className="pb-8">
@@ -35,17 +49,33 @@ export default function Riwayat() {
         </div>
 
         <div className="space-y-3">
-          {filtered.map((i, idx) => (
-            <div key={idx} className="bg-white rounded-2xl p-3 flex gap-3 items-center shadow-sm">
-              <div className="h-14 w-14 rounded-xl bg-gray-200 shrink-0" />
-              <div>
-                <span className="inline-block text-xs bg-sky-100 text-sky-600 rounded-full px-2 py-0.5 font-medium">
-                  {i.tag}
-                </span>
-                <p className="text-sm font-semibold text-gray-800 mt-1">{i.judul}</p>
-                <p className="text-xs text-gray-400 mt-0.5">{i.tanggal}</p>
+          {filtered.map((report) => (
+            <article key={report.id} className="bg-white rounded-2xl p-4 shadow-sm">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs text-gray-400">#{report.id}</p>
+                  <p className="mt-1 text-sm font-semibold text-gray-800">{report.judul}</p>
+                  <p className="mt-1 text-xs text-gray-400">{report.tanggal} · {report.lokasi}</p>
+                </div>
+                <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${
+                  report.status === "Selesai" ? "bg-emerald-100 text-emerald-700" :
+                  report.status === "Ditolak" ? "bg-rose-100 text-rose-700" :
+                  report.status === "Diproses" ? "bg-amber-100 text-amber-700" : "bg-sky-100 text-sky-700"
+                }`}>{report.status}</span>
               </div>
-            </div>
+              <div className="mt-3 border-l-2 border-brand-100 pl-3 space-y-2">
+                {(report.statusHistory.length ? report.statusHistory : [{ status: report.status, time: "", reply: report.tanggapan }]).map((progress, index) => (
+                  <div key={`${progress.time}-${index}`}>
+                    <p className="text-xs font-semibold text-gray-700">{progress.status}</p>
+                    {progress.time && <p className="text-[10px] text-gray-400">{new Date(progress.time).toLocaleString("id-ID")}</p>}
+                    {progress.reply && <p className="mt-1 text-xs text-gray-600">Tanggapan admin: {progress.reply}</p>}
+                  </div>
+                ))}
+              </div>
+              <Link to={`/lacak/${String(report.id).replace("#", "")}`} className="mt-3 inline-block text-xs font-semibold text-brand-700">
+                Buka laporan
+              </Link>
+            </article>
           ))}
           {filtered.length === 0 && (
             <p className="text-center text-sm text-gray-400 py-10">Belum ada riwayat.</p>

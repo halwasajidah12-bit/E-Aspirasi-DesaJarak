@@ -13,20 +13,21 @@ export default function App() {
 
   const handleLogin = async (credentials) => {
     const result = await login(credentials)
-    setSession({ role: result.role, name: result.name })
+    setSession({ role: result.role, name: result.name, userId: result.userId })
     setScreen(result.role === 'admin' ? 'admin' : 'user')
     return result
   }
 
   const handleRegister = async (credentials) => {
     const result = await register(credentials)
-    setSession({ role: 'user', name: result.name })
+    setSession({ role: 'user', name: result.name, userId: result.userId })
     setScreen('user')
     return result
   }
 
   const handleGuest = () => {
-    setSession({ role: 'guest', name: 'Tamu' })
+    const userId = globalThis.crypto?.randomUUID?.() || `guest-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    setSession({ role: 'guest', name: 'Tamu', userId })
     setScreen('user')
   }
 

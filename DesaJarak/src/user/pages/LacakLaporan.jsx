@@ -1,17 +1,37 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Search, Plus, Filter } from "lucide-react";
 import PageHeader from "../components/PageHeader";
 import ReportCard from "../components/ReportCard";
-import { laporanData, kategoriList } from "../data/laporan";
+import { kategoriList, mapApiReport } from "../data/laporan";
+import { getReports } from "../../utils/api.js";
 
-const statusFilters = ["Semua", "Masuk", "Diproses", "Selesai"];
-const kategoriFilters = ["Semua", ...kategoriList];
+const statusFilters = ["Semua", "Masuk", "Diproses", "Selesai", "Ditolak"];
 
 export default function LacakLaporan() {
+  const [laporanData, setLaporanData] = useState([]);
   const [status, setStatus] = useState("Semua");
   const [kategori, setKategori] = useState("Semua");
   const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    let mounted = true;
+    const refreshReports = () => {
+      getReports()
+        .then((items) => {
+          if (mounted) setLaporanData(items.map(mapApiReport));
+        })
+        .catch(() => {});
+    };
+    refreshReports();
+    const interval = setInterval(refreshReports, 3000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  const kategoriFilters = ["Semua", ...new Set([...kategoriList, ...laporanData.map((item) => item.kategori)])];
 
   const filtered = laporanData.filter((l) => {
     const q = query.toLowerCase();

@@ -47,6 +47,37 @@ const countComments = (comments = []) => comments.reduce(
   0,
 )
 
+const summarizeReportComments = (comments = []) => {
+  if (!comments.length) return ''
+  const stopWords = new Set(['yang', 'dan', 'di', 'ke', 'dari', 'untuk', 'agar', 'pada', 'ini', 'itu', 'dengan', 'kami', 'warga', 'saya', 'ada', 'bisa', 'lebih', 'sudah', 'belum', 'karena', 'agar', 'tolong'])
+  const sentences = comments.map((comment) => String(comment.text || '').trim()).filter(Boolean)
+  const frequencies = new Map()
+  for (const sentence of sentences) {
+    for (const word of sentence.toLowerCase().match(/[a-z0-9]{3,}/g) || []) {
+      if (!stopWords.has(word)) frequencies.set(word, (frequencies.get(word) || 0) + 1)
+    }
+  }
+  const ranked = sentences.map((text) => {
+    const words = text.toLowerCase().match(/[a-z0-9]{3,}/g) || []
+    const score = words.reduce((sum, word) => sum + (stopWords.has(word) ? 0 : (frequencies.get(word) || 0)), 0) / Math.max(words.length, 1)
+    return { text, score }
+  }).sort((a, b) => b.score - a.score)
+  const selected = [...new Set(ranked.slice(0, Math.min(2, ranked.length)).map((item) => item.text))]
+  const normalized = sentences.join(' ').toLowerCase()
+  const sentiment = /bahaya|rusak|lambat|kecewa|belum|bocor|macet|mati|sampah/.test(normalized)
+    ? 'Perlu perhatian pada kendala yang disampaikan warga.'
+    : 'Komentar warga cenderung berupa masukan dan dukungan.'
+  return `Rangkuman NLP dari ${comments.length} komentar: ${selected.join(' ')} ${sentiment}`
+}
+
+const normalizeReportComment = (comment, index, reportId) => ({
+  id: comment.id || `${reportId}-comment-${index}`,
+  ownerId: comment.ownerId || '',
+  name: comment.name || 'Warga Desa',
+  time: comment.time || '',
+  text: String(comment.text || '').trim(),
+})
+
 const normalizeNewsComment = (comment, index, postId) => {
   const text = comment.text || comment.teks || ''
   if (!text || defaultNewsComments.has(text.trim())) return null
@@ -132,6 +163,27 @@ const mutateEducation = async (mutator) => {
   }
 }
 
+const mutateReports = async (mutator) => {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const result = await client.query('SELECT data_value FROM app_data WHERE data_key = $1 FOR UPDATE', ['reports'])
+    const outcome = mutator(result.rows[0]?.data_value || [])
+    if (!outcome) {
+      await client.query('ROLLBACK')
+      return null
+    }
+    await client.query('UPDATE app_data SET data_value = $1, updated_at = NOW() WHERE data_key = $2', [JSON.stringify(outcome.reports), 'reports'])
+    await client.query('COMMIT')
+    return outcome.value
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
 const initDatabase = async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS app_data (data_key TEXT PRIMARY KEY, data_value JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
@@ -168,6 +220,94 @@ const initDatabase = async () => {
 
 const handleApi = async (request, response, pathname) => {
   if (request.method === 'GET' && pathname === '/api/health') return sendJson(response, 200, { ok: true })
+  if (request.method === 'GET' && pathname === '/api/reports') {
+    const result = await pool.query('SELECT data_value FROM app_data WHERE data_key = $1', ['reports'])
+    return sendJson(response, 200, result.rows[0]?.data_value || [])
+  }
+  if (request.method === 'POST' && pathname === '/api/reports') {
+    const body = await readJson(request)
+    if (!body.judul || !body.deskripsi || !body.lokasi || !body.ownerId) return sendJson(response, 400, { message: 'Judul, lokasi, deskripsi, dan identitas pelapor wajib diisi.' })
+    const now = new Date()
+    const categoryMap = {
+      Jalan: 'Jalan & Fasilitas',
+      Jembatan: 'Jalan & Fasilitas',
+      Drainase: 'Jalan & Fasilitas',
+      Listrik: 'Penerangan',
+      Air: 'Lingkungan',
+      Lainya: 'Lainnya',
+      Lainnya: 'Lainnya',
+    }
+    const report = await mutateReports((items) => {
+      const id = `JR-${String(Date.now()).slice(-6)}`
+      const report = {
+        id,
+        title: String(body.judul).trim(),
+        author: String(body.ownerName || 'Warga Desa').trim(),
+        ownerId: String(body.ownerId),
+        ownerName: String(body.ownerName || 'Warga Desa').trim(),
+        category: categoryMap[body.kategori] || body.kategori || 'Lainnya',
+        status: 'Masuk',
+        urgency: 'Sedang',
+        votes: 0,
+        comments: 0,
+        image: body.image || '',
+        description: String(body.deskripsi).trim(),
+        location: String(body.lokasi).trim(),
+        rt: body.rt || '-',
+        rw: body.rw || '-',
+        time: body.waktu || now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+        reportDate: body.tanggal || now.toLocaleDateString('id-ID'),
+        aiSuggestion: 'Belum ada komentar warga. Ringkasan akan dibuat setelah warga memberikan masukan.',
+        officialReply: '',
+        submittedAt: now.toISOString(),
+        commentsList: [],
+        statusHistory: [{ status: 'Masuk', time: now.toISOString(), reply: '' }],
+      }
+      return { reports: [report, ...items], value: report }
+    })
+    return sendJson(response, 201, report)
+  }
+  if (request.method === 'PUT' && /^\/api\/reports\/[^/]+$/.test(pathname)) {
+    const id = decodeURIComponent(pathname.slice('/api/reports/'.length))
+    const body = await readJson(request)
+    const allowedStatuses = ['Masuk', 'Diproses', 'Selesai', 'Ditolak']
+    if (!allowedStatuses.includes(body.status)) return sendJson(response, 400, { message: 'Status laporan tidak valid.' })
+    const updated = await mutateReports((items) => {
+      const current = items.find((item) => String(item.id) === id)
+      if (!current) return null
+      const time = new Date().toISOString()
+      const officialReply = String(body.officialReply ?? current.officialReply ?? '').trim()
+      const statusHistory = [...(current.statusHistory || [])]
+      if (current.status !== body.status || officialReply !== (current.officialReply || '')) {
+        statusHistory.push({ status: body.status, time, reply: officialReply })
+      }
+      const next = { ...current, status: body.status, officialReply, statusHistory }
+      return { reports: items.map((item) => String(item.id) === id ? next : item), value: next }
+    })
+    return updated ? sendJson(response, 200, updated) : sendJson(response, 404, { message: 'Laporan tidak ditemukan.' })
+  }
+  if (request.method === 'POST' && /^\/api\/reports\/[^/]+\/comments$/.test(pathname)) {
+    const id = decodeURIComponent(pathname.slice('/api/reports/'.length, -'/comments'.length))
+    const body = await readJson(request)
+    const text = String(body.text || '').trim()
+    if (!body.ownerId || !text) return sendJson(response, 400, { message: 'Identitas dan isi komentar wajib diisi.' })
+    const updated = await mutateReports((items) => {
+      const current = items.find((item) => String(item.id) === id)
+      if (!current) return null
+      const commentsList = [...(current.commentsList || [])]
+      commentsList.push(normalizeReportComment({
+        id: randomBytes(8).toString('hex'),
+        ownerId: body.ownerId,
+        name: body.name || 'Warga Desa',
+        time: new Date().toLocaleString('id-ID'),
+        text,
+      }, commentsList.length, id))
+      const aiSuggestion = summarizeReportComments(commentsList)
+      const next = { ...current, commentsList, comments: commentsList.length, aiSuggestion }
+      return { reports: items.map((item) => String(item.id) === id ? next : item), value: next }
+    })
+    return updated ? sendJson(response, 201, updated) : sendJson(response, 404, { message: 'Laporan tidak ditemukan.' })
+  }
   if (request.method === 'GET' && pathname === '/api/education') {
     const result = await pool.query('SELECT data_value FROM app_data WHERE data_key = $1', ['edukasi'])
     return sendJson(response, 200, result.rows[0]?.data_value || [])
@@ -314,31 +454,6 @@ const handleApi = async (request, response, pathname) => {
     await pool.query('UPDATE app_data SET data_value = $1, updated_at = NOW() WHERE data_key = $2', [JSON.stringify(value), key])
     return sendJson(response, 200, { ok: true, key, value })
   }
-  if (request.method === 'POST' && pathname === '/api/reports') {
-    const body = await readJson(request)
-    if (!body.judul || !body.deskripsi || !body.lokasi) return sendJson(response, 400, { message: 'Judul, lokasi, dan deskripsi wajib diisi.' })
-    const result = await pool.query('SELECT data_value FROM app_data WHERE data_key = $1', ['reports'])
-    const reports = result.rows[0]?.data_value || []
-    const report = {
-      id: `JR-${String(Date.now()).slice(-6)}`,
-      title: body.judul,
-      author: body.author || 'Warga Desa',
-      category: body.kategori || 'Lainnya',
-      status: 'Masuk',
-      urgency: 'Sedang',
-      votes: 0,
-      comments: 0,
-      image: '',
-      description: `${body.deskripsi} Lokasi: ${body.lokasi}. RT ${body.rt || '-'} / RW ${body.rw || '-'}.`,
-      aiSuggestion: '',
-      officialReply: '',
-      submittedAt: new Date().toISOString(),
-      commentsList: [],
-    }
-    const next = [report, ...reports]
-    await pool.query('UPDATE app_data SET data_value = $1, updated_at = NOW() WHERE data_key = $2', [JSON.stringify(next), 'reports'])
-    return sendJson(response, 201, report)
-  }
   if (request.method === 'POST' && (pathname === '/api/auth/login' || pathname === '/api/auth/register')) {
     const body = await readJson(request)
     const username = String(body.username || '').trim().toLowerCase()
@@ -349,7 +464,7 @@ const handleApi = async (request, response, pathname) => {
       const credentials = hashPassword(password)
       try {
         await pool.query('INSERT INTO users (username, fullname, password_hash, password_salt) VALUES ($1, $2, $3, $4)', [username, fullname, credentials.hash, credentials.salt])
-        return sendJson(response, 201, { success: true, role: 'user', name: fullname })
+        return sendJson(response, 201, { success: true, role: 'user', name: fullname, userId: username })
       } catch (error) {
         if (error.code === '23505') return sendJson(response, 409, { message: 'Username sudah digunakan.' })
         throw error
@@ -358,7 +473,7 @@ const handleApi = async (request, response, pathname) => {
     const result = await pool.query('SELECT username, fullname, password_hash, password_salt FROM users WHERE username = $1', [username])
     const user = result.rows[0]
     if (!user || !passwordMatches(password, user.password_salt, user.password_hash)) return sendJson(response, 401, { message: 'Username atau password salah.' })
-    return sendJson(response, 200, { success: true, role: user.username === 'admin' ? 'admin' : 'user', name: user.fullname })
+    return sendJson(response, 200, { success: true, role: user.username === 'admin' ? 'admin' : 'user', name: user.fullname, userId: user.username })
   }
   return sendJson(response, 404, { message: 'Endpoint tidak ditemukan.' })
 }

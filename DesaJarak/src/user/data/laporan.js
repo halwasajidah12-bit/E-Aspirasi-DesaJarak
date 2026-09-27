@@ -66,12 +66,35 @@ export const laporanData = [
   },
 ];
 
+export const mapApiReport = (report) => ({
+  id: report.id,
+  kategori: report.category,
+  status: report.status,
+  judul: report.title,
+  deskripsi: report.description,
+  tanggal: report.reportDate || (report.submittedAt ? new Date(report.submittedAt).toLocaleDateString("id-ID") : "-"),
+  waktu: report.time || (report.submittedAt ? new Date(report.submittedAt).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }) : "-"),
+  rt: report.rt || "-",
+  rw: report.rw || "-",
+  lokasi: report.location || "-",
+  dukungan: report.votes || 0,
+  foto: report.image || "",
+  pelapor: report.author || "Warga Desa",
+  ownerId: report.ownerId || "",
+  ownerName: report.ownerName || report.author || "Warga Desa",
+  komentar: report.commentsList || [],
+  tanggapan: report.officialReply || "",
+  aiSuggestion: report.aiSuggestion || "Belum ada komentar warga.",
+  statusHistory: report.statusHistory || [],
+})
+
 // Label & warna status — nilai key HARUS sama dengan status di admin
 // (Masuk, Diproses, Selesai) supaya kartu laporan konsisten di kedua sisi.
 export const statusColor = {
   Masuk: "bg-sky-100 text-sky-700",
   Diproses: "bg-accent-500 text-white",
   Selesai: "bg-brand-700 text-white",
+  Ditolak: "bg-rose-100 text-rose-700",
 };
 
 export const kategoriList = ["Jalan & Fasilitas", "Lingkungan", "Penerangan"];

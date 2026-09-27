@@ -10,7 +10,7 @@ export default function ReportDetailModal({ report, onClose, onSave }) {
       setStatus(report.status)
       setReply(report.officialReply || '')
     }
-  }, [report])
+  }, [report?.id])
 
   if (!report) return null
 
@@ -68,7 +68,7 @@ export default function ReportDetailModal({ report, onClose, onSave }) {
               <h4 className="font-bold text-gray-800">
                 <i className="fa-regular fa-comments text-emerald-600 mr-1"></i> Komentar Warga
               </h4>
-              <span className="text-[10px] text-gray-400">{comments.length} komentar</span>
+              <span className="text-[10px] text-gray-400">{report.comments ?? comments.length} komentar</span>
             </div>
             <div className="space-y-2 max-h-48 overflow-y-auto">
               {comments.length ? (
@@ -91,7 +91,7 @@ export default function ReportDetailModal({ report, onClose, onSave }) {
             <div className="flex items-center gap-1.5 font-bold text-[11px] text-amber-800">
               <i className="fa-solid fa-lightbulb"></i> Rekomendasi AI Response:
             </div>
-            <p className="text-[11px] text-amber-800/90 leading-relaxed">{report.aiSuggestion}</p>
+            <p className="text-[11px] text-amber-800/90 leading-relaxed">{report.aiSuggestion || 'Belum ada komentar warga untuk dirangkum.'}</p>
           </div>
 
           <div className="space-y-2 border-t pt-2 border-gray-100">

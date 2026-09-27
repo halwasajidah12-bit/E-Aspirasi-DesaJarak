@@ -59,15 +59,15 @@ export default function App({ session, onLogout }) {
         <main className="flex-1 relative w-full">
           <Routes>
             <Route path="/" element={<Home />} />
-            <Route path="/aspirasi" element={<Aspirasi />} />
+            <Route path="/aspirasi" element={<Aspirasi session={session} />} />
             <Route path="/aspirasi/detail" element={<DetailAspirasi />} />
             <Route path="/lacak" element={<LacakLaporan />} />
-            <Route path="/lacak/:id" element={<DetailLaporan />} />
+            <Route path="/lacak/:id" element={<DetailLaporan session={session} />} />
             <Route path="/vote" element={<VotePrioritas />} />
             <Route path="/berita" element={<BeritaDesa />} />
             <Route path="/berita/:id" element={<BeritaDetail session={session} />} />
             <Route path="/info-desa" element={<InfoDesa />} />
-            <Route path="/riwayat" element={<Riwayat />} />
+            <Route path="/riwayat" element={<Riwayat session={session} />} />
             <Route path="/akun" element={<Akun />} />
             <Route path="/edukasi" element={<Edukasi />} />
             <Route path="/edukasi/:slug" element={<EdukasiDetail />} />
