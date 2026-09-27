@@ -1,26 +1,58 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useNavigate, Navigate } from "react-router-dom";
 import { ArrowLeft, Calendar, MapPin, Send } from "lucide-react";
-import { beritaData } from "../data/berita";
+import { countNewsComments, mapAdminNews } from "../data/berita";
+import { addNewsComment, getNews } from "../../utils/api.js";
 
-export default function BeritaDetail() {
+export default function BeritaDetail({ session }) {
   const { id } = useParams();
   const navigate = useNavigate();
-  const berita = beritaData.find((b) => String(b.id) === String(id));
-
-  const [komentar, setKomentar] = useState(berita?.komentar ?? []);
+  const [berita, setBerita] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [teks, setTeks] = useState("");
+  const [error, setError] = useState("");
 
+  useEffect(() => {
+    let mounted = true;
+    const refreshNews = () => {
+      getNews()
+        .then((items) => {
+          const item = items.find((entry) => String(entry.id) === String(id) && ["Tayang", "Publish"].includes(entry.status));
+          if (mounted) {
+            setBerita(item ? mapAdminNews(item) : null);
+            setLoading(false);
+          }
+        })
+        .catch(() => {
+          if (mounted) setLoading(false);
+        });
+    };
+    refreshNews();
+    const interval = setInterval(refreshNews, 3000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [id]);
+
+  if (loading) return <div className="p-8 text-center text-sm text-gray-500">Memuat berita...</div>;
   if (!berita) return <Navigate to="/berita" replace />;
 
-  const kirimKomentar = (e) => {
+  const kirimKomentar = async (e) => {
     e.preventDefault();
     if (!teks.trim()) return;
-    setKomentar((k) => [
-      ...k,
-      { nama: "Anda", waktu: "Baru saja", teks: teks.trim() },
-    ]);
-    setTeks("");
+    setError("");
+    try {
+      const updated = await addNewsComment(id, {
+        name: session?.name || "Warga Desa",
+        role: "user",
+        text: teks.trim(),
+      });
+      setBerita(mapAdminNews(updated));
+      setTeks("");
+    } catch (requestError) {
+      setError(requestError.message || "Komentar gagal dikirim.");
+    }
   };
 
   return (
@@ -54,22 +86,38 @@ export default function BeritaDetail() {
 
         <div className="mt-6">
           <p className="text-sm font-semibold text-gray-700 mb-3">
-            Komentar ({komentar.length})
+            Komentar ({countNewsComments(berita.komentar)})
           </p>
           <div className="space-y-3">
-            {komentar.map((k, i) => (
-              <div key={i} className="bg-gray-50 rounded-2xl p-3">
+            {berita.komentar.map((k, i) => (
+              <div key={k.id || i} className="bg-gray-50 rounded-2xl p-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-semibold text-gray-800">{k.nama}</span>
-                  <span className="text-xs text-gray-400">{k.waktu}</span>
+                  <span className="text-sm font-semibold text-gray-800">{k.name}</span>
+                  <span className="text-xs text-gray-400">{k.time}</span>
                 </div>
-                <p className="text-sm text-gray-600 mt-1">{k.teks}</p>
+                <p className="text-sm text-gray-600 mt-1">{k.text}</p>
+                {(k.replies || []).map((reply) => (
+                  <div key={reply.id} className="ml-3 mt-3 border-l-2 border-brand-200 pl-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-semibold text-gray-800">{reply.name}</span>
+                      <span className="text-xs text-gray-400">{reply.time}</span>
+                    </div>
+                    {reply.quotedText && (
+                      <blockquote className="mt-1 border-l-2 border-gray-300 pl-2 text-xs text-gray-500">
+                        {reply.quotedName}: {reply.quotedText}
+                      </blockquote>
+                    )}
+                    <p className="text-sm text-gray-600 mt-1">{reply.text}</p>
+                  </div>
+                ))}
               </div>
             ))}
-            {komentar.length === 0 && (
+            {berita.komentar.length === 0 && (
               <p className="text-center text-sm text-gray-400 py-4">Belum ada komentar.</p>
             )}
           </div>
+
+          {error && <p className="mt-2 text-xs text-rose-600">{error}</p>}
 
           <form onSubmit={kirimKomentar} className="flex items-center gap-2 mt-4">
             <input

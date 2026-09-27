@@ -26,6 +26,44 @@ const pool = new Pool(process.env.DATABASE_URL ? {
 })
 
 const seedData = { profil: initialProfilDesa, reports: initialReports, news: initialNews, edukasi: initialEdukasi, userBerita: beritaData, userEdukasi: edukasiList, userLaporan: laporanData, userProfil: profilDesa }
+const defaultNewsComments = new Set([
+  'Semoga segera selesai dan bisa digunakan warga.',
+  'Terima kasih informasinya.',
+  'Apakah rincian penggunaannya akan dipublikasikan?',
+])
+
+const countComments = (comments = []) => comments.reduce(
+  (total, comment) => total + 1 + countComments(comment.replies || []),
+  0,
+)
+
+const normalizeNewsComment = (comment, index, postId) => {
+  const text = comment.text || comment.teks || ''
+  if (!text || defaultNewsComments.has(text.trim())) return null
+  const name = comment.name || comment.nama || 'Warga Desa'
+  return {
+    id: comment.id || `${postId}-comment-${index}`,
+    name,
+    role: comment.role || (name === 'Admin Desa' ? 'admin' : 'user'),
+    time: comment.time || comment.waktu || '',
+    text,
+    quotedName: comment.quotedName || '',
+    quotedText: comment.quotedText || '',
+    replies: (comment.replies || [])
+      .map((reply, replyIndex) => normalizeNewsComment(reply, `${index}-${replyIndex}`, postId))
+      .filter(Boolean),
+  }
+}
+
+const migrateNews = (items) => items.map((item) => {
+  let image = item.image
+  if (item.title === 'Pembangunan Posyandu Baru Dusun Jarak Lor' && image?.startsWith('https://images.unsplash.com/photo-1577495508048-b635879837f1')) image = '/images/posyandu.jpg'
+  if (item.title === 'Dana Desa Tahap II Rp 240 Juta Disalurkan' && image?.startsWith('https://images.unsplash.com/photo-1554224155-8d04cb21cd6c')) image = '/images/dana.jpg'
+  const commentsList = (item.commentsList || [])
+    .map((comment, index) => normalizeNewsComment(comment, index, item.id))
+    .filter(Boolean)
+  return { ...item, image, commentsList, comments: countComments(commentsList) }
+})
 
 const sendJson = (response, status, payload) => {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' })
@@ -41,6 +79,27 @@ const readJson = async (request) => {
 const hashPassword = (password, salt = randomBytes(16).toString('hex')) => ({ salt, hash: scryptSync(password, salt, 64).toString('hex') })
 const passwordMatches = (password, salt, expected) => createHash('sha256').update(hashPassword(password, salt).hash).digest('hex') === createHash('sha256').update(expected).digest('hex')
 
+const mutateNews = async (mutator) => {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const result = await client.query('SELECT data_value FROM app_data WHERE data_key = $1 FOR UPDATE', ['news'])
+    const outcome = mutator(result.rows[0]?.data_value || [])
+    if (!outcome) {
+      await client.query('ROLLBACK')
+      return null
+    }
+    await client.query('UPDATE app_data SET data_value = $1, updated_at = NOW() WHERE data_key = $2', [JSON.stringify(outcome.news), 'news'])
+    await client.query('COMMIT')
+    return outcome.value
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
 const initDatabase = async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS app_data (data_key TEXT PRIMARY KEY, data_value JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
@@ -49,6 +108,17 @@ const initDatabase = async () => {
   for (const [key, value] of Object.entries(seedData)) {
     await pool.query('INSERT INTO app_data (data_key, data_value) VALUES ($1, $2) ON CONFLICT (data_key) DO NOTHING', [key, JSON.stringify(value)])
   }
+  const storedNews = await pool.query('SELECT data_value FROM app_data WHERE data_key = $1', ['news'])
+  const normalizedNews = migrateNews(storedNews.rows[0]?.data_value || [])
+  await pool.query('UPDATE app_data SET data_value = $1, updated_at = NOW() WHERE data_key = $2', [JSON.stringify(normalizedNews), 'news'])
+  const storedUserNews = await pool.query('SELECT data_value FROM app_data WHERE data_key = $1', ['userBerita'])
+  const userNews = (storedUserNews.rows[0]?.data_value || []).map((item) => {
+    let image = item.image
+    if (image?.startsWith('https://images.unsplash.com/photo-1577495508048-b635879837f1')) image = '/images/posyandu.jpg'
+    if (image?.startsWith('https://images.unsplash.com/photo-1554224155-8d04cb21cd6c')) image = '/images/dana.jpg'
+    return { ...item, image, komentar: (item.komentar || []).filter((comment) => !defaultNewsComments.has(String(comment.teks || comment.text || '').trim())) }
+  })
+  await pool.query('UPDATE app_data SET data_value = $1, updated_at = NOW() WHERE data_key = $2', [JSON.stringify(userNews), 'userBerita'])
   for (const [username, fullname, password] of [['admin', 'Admin Desa', process.env.ADMIN_PASSWORD || 'admin'], ['warga', 'Warga Desa', 'warga']]) {
     const credentials = hashPassword(password)
     await pool.query('INSERT INTO users (username, fullname, password_hash, password_salt) VALUES ($1, $2, $3, $4) ON CONFLICT (username) DO NOTHING', [username, fullname, credentials.hash, credentials.salt])
@@ -57,6 +127,84 @@ const initDatabase = async () => {
 
 const handleApi = async (request, response, pathname) => {
   if (request.method === 'GET' && pathname === '/api/health') return sendJson(response, 200, { ok: true })
+  if (request.method === 'GET' && pathname === '/api/news') {
+    const result = await pool.query('SELECT data_value FROM app_data WHERE data_key = $1', ['news'])
+    return sendJson(response, 200, result.rows[0]?.data_value || [])
+  }
+  if (request.method === 'POST' && pathname === '/api/news') {
+    const body = await readJson(request)
+    if (!body.title || !body.content) return sendJson(response, 400, { message: 'Judul dan isi berita wajib diisi.' })
+    const created = await mutateNews((items) => {
+      const news = {
+        id: Date.now(),
+        title: String(body.title).trim(),
+        category: body.category || 'Pengumuman',
+        date: body.date || 'Hari ini',
+        status: 'Draft',
+        image: body.image || '',
+        content: String(body.content).trim(),
+        commentsList: [],
+        comments: 0,
+      }
+      return { news: [news, ...items], value: news }
+    })
+    return sendJson(response, 201, created)
+  }
+  if (request.method === 'PUT' && /^\/api\/news\/[^/]+$/.test(pathname)) {
+    const id = decodeURIComponent(pathname.slice('/api/news/'.length))
+    const updates = await readJson(request)
+    const allowed = ['title', 'category', 'date', 'status', 'image', 'content']
+    const updated = await mutateNews((items) => {
+      const current = items.find((item) => String(item.id) === id)
+      if (!current) return null
+      const nextItem = { ...current, ...Object.fromEntries(allowed.filter((key) => Object.hasOwn(updates, key)).map((key) => [key, updates[key]])) }
+      nextItem.comments = countComments(nextItem.commentsList || [])
+      return { news: items.map((item) => String(item.id) === id ? nextItem : item), value: nextItem }
+    })
+    return updated ? sendJson(response, 200, updated) : sendJson(response, 404, { message: 'Berita tidak ditemukan.' })
+  }
+  if (request.method === 'DELETE' && /^\/api\/news\/[^/]+$/.test(pathname)) {
+    const id = decodeURIComponent(pathname.slice('/api/news/'.length))
+    const deleted = await mutateNews((items) => {
+      if (!items.some((item) => String(item.id) === id)) return null
+      return { news: items.filter((item) => String(item.id) !== id), value: { id } }
+    })
+    return deleted ? sendJson(response, 200, deleted) : sendJson(response, 404, { message: 'Berita tidak ditemukan.' })
+  }
+  if (request.method === 'POST' && /^\/api\/news\/[^/]+\/comments$/.test(pathname)) {
+    const id = decodeURIComponent(pathname.slice('/api/news/'.length, -'/comments'.length))
+    const body = await readJson(request)
+    const text = String(body.text || '').trim()
+    if (!text) return sendJson(response, 400, { message: 'Komentar tidak boleh kosong.' })
+    const role = body.role === 'admin' ? 'admin' : 'user'
+    const comment = {
+      id: randomBytes(8).toString('hex'),
+      name: String(body.name || (role === 'admin' ? 'Admin Desa' : 'Warga Desa')).trim(),
+      role,
+      time: new Date().toLocaleString('id-ID'),
+      text,
+      quotedName: '',
+      quotedText: '',
+      replies: [],
+    }
+    const updated = await mutateNews((items) => {
+      const current = items.find((item) => String(item.id) === id)
+      if (!current || (role === 'user' && !['Tayang', 'Publish'].includes(current.status))) return null
+      const commentsList = [...(current.commentsList || [])]
+      if (role === 'admin' && body.replyToId) {
+        const parent = commentsList.find((entry) => String(entry.id) === String(body.replyToId))
+        if (!parent) return null
+        comment.quotedName = parent.name
+        comment.quotedText = parent.text
+        parent.replies = [...(parent.replies || []), comment]
+      } else {
+        commentsList.push(comment)
+      }
+      const nextItem = { ...current, commentsList, comments: countComments(commentsList) }
+      return { news: items.map((item) => String(item.id) === id ? nextItem : item), value: nextItem }
+    })
+    return updated ? sendJson(response, 201, updated) : sendJson(response, 404, { message: 'Berita tidak ditemukan atau tidak dapat dikomentari.' })
+  }
   if (request.method === 'GET' && pathname === '/api/data') {
     const result = await pool.query('SELECT data_key, data_value FROM app_data ORDER BY data_key')
     return sendJson(response, 200, Object.fromEntries(result.rows.map((row) => [row.data_key, row.data_value])))

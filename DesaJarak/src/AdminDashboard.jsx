@@ -16,7 +16,7 @@ import Edukasi from './pages/Edukasi.jsx'
 import Berita from './pages/Berita.jsx'
 import Profil from './pages/Profil.jsx'
 import { initialProfilDesa, initialReports, initialNews, initialEdukasi } from './data/initialData.js'
-import { getAppData, saveAppData } from './utils/api.js'
+import { getAppData, saveAppData, getNews, createNews, updateNews, deleteNewsItem, addNewsComment } from './utils/api.js'
 
 const DEFAULT_NEWS_IMAGE = 'https://images.unsplash.com/photo-1504384308090-c894fdcc538d?w=900&auto=format&fit=crop&q=80'
 
@@ -40,6 +40,13 @@ export default function AdminDashboard({ adminName, onLogout }) {
         if (data.edukasi) setEdukasiData(data.edukasi)
       })
       .catch((error) => showToast(`Database belum tersedia: ${error.message}`))
+  }, [])
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      getNews().then(setNewsData).catch(() => {})
+    }, 3000)
+    return () => clearInterval(interval)
   }, [])
 
   const persist = (key, value) => {
@@ -157,23 +164,18 @@ export default function AdminDashboard({ adminName, onLogout }) {
   const generateAiNewsScript = ({ topic, category, image }) => {
     showToast('Sedang menyusun draf berita AI...')
     setTimeout(() => {
-      const next = [
-        {
-          id: Date.now(),
-          title: topic,
-          category,
-          date: 'Hari ini',
-          comments: 0,
-          status: 'Draft',
-          image: image || DEFAULT_NEWS_IMAGE,
-          content: `Draf berita AI mengenai ${topic}. Silakan edit isi berita sebelum dipublikasikan.`,
-          commentsList: [],
-        },
-          ...newsData,
-      ]
-      setNewsData(next)
-      persist('news', next)
-      showToast('Draf berita AI berhasil dibuat. Silakan edit atau publish.')
+      createNews({
+        title: topic,
+        category,
+        date: 'Hari ini',
+        image: image || DEFAULT_NEWS_IMAGE,
+        content: `Draf berita AI mengenai ${topic}. Silakan edit isi berita sebelum dipublikasikan.`,
+      })
+        .then((created) => {
+          setNewsData((current) => [created, ...current])
+          showToast('Draf berita AI berhasil dibuat. Silakan edit atau publish.')
+        })
+        .catch((error) => showToast(`Gagal membuat draf berita: ${error.message}`))
     }, image ? 0 : 500)
   }
 
@@ -181,38 +183,46 @@ export default function AdminDashboard({ adminName, onLogout }) {
   const closeNewsModal = () => setActiveNewsId(null)
   const activeNews = newsData.find((n) => n.id === activeNewsId) || null
 
-  const saveNewsEdit = (form) => {
-    const next = newsData.map((n) => (n.id === form.id ? { ...n, ...form } : n))
-    setNewsData(next)
-    persist('news', next)
-    showToast('Berita berhasil diperbarui.')
-    closeNewsModal()
+  const saveNewsEdit = async (form) => {
+    try {
+      const updated = await updateNews(form.id, form)
+      setNewsData((current) => current.map((item) => String(item.id) === String(updated.id) ? updated : item))
+      showToast('Berita berhasil diperbarui.')
+      closeNewsModal()
+    } catch (error) {
+      showToast(`Gagal memperbarui berita: ${error.message}`)
+    }
   }
 
-  const setNewsStatus = (id, status) => {
-    const next = newsData.map((n) => (n.id === id ? { ...n, status } : n))
-    setNewsData(next)
-    persist('news', next)
-    showToast(status === 'Tayang' ? 'Berita berhasil dipublish.' : 'Berita dipindahkan ke draft.')
+  const setNewsStatus = async (id, status) => {
+    try {
+      const updated = await updateNews(id, { status })
+      setNewsData((current) => current.map((item) => String(item.id) === String(id) ? updated : item))
+      showToast(status === 'Tayang' ? 'Berita berhasil dipublish.' : 'Berita dipindahkan ke draft.')
+    } catch (error) {
+      showToast(`Gagal mengubah status berita: ${error.message}`)
+    }
   }
 
-  const deleteNews = (id) => {
-    const next = newsData.filter((n) => n.id !== id)
-    setNewsData(next)
-    persist('news', next)
-    showToast('Berita berhasil dihapus.')
-    closeNewsModal()
+  const deleteNews = async (id) => {
+    try {
+      await deleteNewsItem(id)
+      setNewsData((current) => current.filter((item) => String(item.id) !== String(id)))
+      showToast('Berita telah dihapus.')
+      closeNewsModal()
+    } catch (error) {
+      showToast(`Gagal menghapus berita: ${error.message}`)
+    }
   }
 
-  const replyToNewsComment = (id, text) => {
-    const next = newsData.map((n) => {
-      if (n.id !== id) return n
-      const commentsList = [...(n.commentsList || []), { name: 'Admin Desa', time: new Date().toLocaleString('id-ID'), text }]
-      return { ...n, commentsList, comments: commentsList.length }
-    })
-    setNewsData(next)
-    persist('news', next)
-    showToast('Tanggapan admin berhasil ditambahkan.')
+  const replyToNewsComment = async (id, text, replyToId = null) => {
+    try {
+      const updated = await addNewsComment(id, { name: 'Admin Desa', role: 'admin', text, replyToId })
+      setNewsData((current) => current.map((item) => String(item.id) === String(id) ? updated : item))
+      showToast(replyToId ? 'Balasan admin berhasil ditambahkan.' : 'Komentar admin berhasil ditambahkan.')
+    } catch (error) {
+      showToast(`Gagal mengirim komentar: ${error.message}`)
+    }
   }
 
   // --- Notification action ---

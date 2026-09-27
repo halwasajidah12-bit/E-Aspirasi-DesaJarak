@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Search, Filter, Calendar, MapPin } from "lucide-react";
 import PageHeader from "../components/PageHeader";
-import { beritaData } from "../data/berita";
+import { mapAdminNews } from "../data/berita";
+import { getNews } from "../../utils/api.js";
 
 const kategoriWarna = {
   Pembangunan: "bg-accent-500 text-white",
@@ -11,9 +12,28 @@ const kategoriWarna = {
 };
 
 export default function BeritaDesa() {
-  const kategoriFilters = ["Semua", ...new Set(beritaData.map((b) => b.kategori))];
+  const [beritaData, setBeritaData] = useState([]);
   const [active, setActive] = useState("Semua");
   const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    let mounted = true;
+    const refreshNews = () => {
+      getNews()
+        .then((items) => {
+          if (mounted) setBeritaData(items.filter((item) => ["Tayang", "Publish"].includes(item.status)).map(mapAdminNews));
+        })
+        .catch(() => {});
+    };
+    refreshNews();
+    const interval = setInterval(refreshNews, 3000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  const kategoriFilters = ["Semua", ...new Set(beritaData.map((b) => b.kategori))];
 
   const filtered = beritaData.filter(
     (b) =>
@@ -83,7 +103,7 @@ export default function BeritaDesa() {
                 </div>
                 <div className="flex items-center justify-between mt-2">
                   <Link to={`/berita/${b.id}`} className="text-xs font-medium text-brand-700">
-                    Tambahkan Komentar
+                    Komentar ({b.komentar.reduce((count, comment) => count + 1 + (comment.replies || []).length, 0)})
                   </Link>
                   <Link
                     to={`/berita/${b.id}`}

@@ -20,6 +20,27 @@ export const register = (user) => jsonRequest('/auth/register', {
 
 export const getAppData = () => jsonRequest('/data')
 
+export const getNews = () => jsonRequest('/news')
+
+export const createNews = (news) => jsonRequest('/news', {
+  method: 'POST',
+  body: JSON.stringify(news),
+})
+
+export const updateNews = (id, updates) => jsonRequest(`/news/${encodeURIComponent(id)}`, {
+  method: 'PUT',
+  body: JSON.stringify(updates),
+})
+
+export const deleteNewsItem = (id) => jsonRequest(`/news/${encodeURIComponent(id)}`, {
+  method: 'DELETE',
+})
+
+export const addNewsComment = (id, comment) => jsonRequest(`/news/${encodeURIComponent(id)}/comments`, {
+  method: 'POST',
+  body: JSON.stringify(comment),
+})
+
 export const saveAppData = (key, value) => jsonRequest(`/data/${key}`, {
   method: 'PUT',
   body: JSON.stringify({ value }),

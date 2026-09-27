@@ -65,7 +65,7 @@ export default function App({ session, onLogout }) {
             <Route path="/lacak/:id" element={<DetailLaporan />} />
             <Route path="/vote" element={<VotePrioritas />} />
             <Route path="/berita" element={<BeritaDesa />} />
-            <Route path="/berita/:id" element={<BeritaDetail />} />
+            <Route path="/berita/:id" element={<BeritaDetail session={session} />} />
             <Route path="/info-desa" element={<InfoDesa />} />
             <Route path="/riwayat" element={<Riwayat />} />
             <Route path="/akun" element={<Akun />} />
