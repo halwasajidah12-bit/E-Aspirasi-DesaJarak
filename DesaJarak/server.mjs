@@ -375,6 +375,7 @@ const handleApi = async (request, response, pathname) => {
     const created = await mutateNews((items) => {
       const news = {
         id: Date.now(),
+        createdAt: new Date().toISOString(),
         title: String(body.title).trim(),
         category: body.category || 'Pengumuman',
         date: body.date || 'Hari ini',

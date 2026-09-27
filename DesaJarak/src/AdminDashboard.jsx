@@ -89,7 +89,7 @@ export default function AdminDashboard({ adminName, onLogout }) {
     const proses = reports.filter((r) => r.status === 'Diproses').length
     const selesai = reports.filter((r) => r.status === 'Selesai').length
     const ditolak = reports.filter((r) => r.status === 'Ditolak').length
-    const prioritas = reports.filter((r) => r.urgency === 'Tinggi' && r.status !== 'Selesai').length
+    const prioritas = reports.filter((r) => r.urgency === 'Tinggi').length
     const handled = selesai + proses
     const responseRate = total > 0 ? Math.round((handled / total) * 100) : 100
     return { total, masuk, proses, selesai, ditolak, prioritas, responseRate }

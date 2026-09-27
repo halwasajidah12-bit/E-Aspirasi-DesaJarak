@@ -2,8 +2,18 @@ import { StatusBadge, UrgencyBadge } from '../utils/badges.jsx'
 import { formatNumber } from '../utils/helpers.js'
 
 export default function Beranda({ profil, reports, news, stats, onSwitchTab, onOpenReportDetail, onUpdateReportStatus }) {
-  const homeReports = reports.slice(0, 3)
-  const homeNews = news.slice(0, 2)
+  const newestFirst = (items, timestamp) => [...items].sort((a, b) => {
+    const getTime = (item) => {
+      const value = timestamp(item)
+      const parsed = value ? new Date(value).getTime() : NaN
+      if (!Number.isNaN(parsed)) return parsed
+      const idTime = Number(item.id)
+      return Number.isFinite(idTime) ? idTime : 0
+    }
+    return getTime(b) - getTime(a)
+  })
+  const homeReports = newestFirst(reports, (item) => item.submittedAt).slice(0, 3)
+  const homeNews = newestFirst(news, (item) => item.createdAt || item.date).slice(0, 3)
 
   return (
     <section className="space-y-3.5">
@@ -149,6 +159,9 @@ export default function Beranda({ profil, reports, news, stats, onSwitchTab, onO
                   <p className="text-[10px] text-gray-400">
                     {item.date} • <i className="fa-regular fa-comment"></i> {item.comments || 0}
                   </p>
+                  <span className={`inline-block mt-1 text-[9px] font-semibold ${item.status === 'Draft' ? 'text-amber-700' : 'text-emerald-700'}`}>
+                    {item.status}
+                  </span>
                 </div>
               </div>
               <button onClick={() => onSwitchTab('berita')} className="text-[11px] text-emerald-600 font-bold flex-shrink-0">
