@@ -27,7 +27,7 @@ export default function LoginPage({ onLogin, onGuest, onGoRegister, onGoogleClic
           <div className="w-16 h-16 mx-auto rounded-2xl bg-emerald-600 text-white flex items-center justify-center text-2xl shadow-lg">
             <i className="fa-solid fa-building-columns"></i>
           </div>
-          <h1 className="text-xl font-extrabold text-emerald-900 mt-3">E-Aspirasi Desa</h1>
+          <h1 className="text-xl font-extrabold text-emerald-900 mt-3">E-Aspirasi Desa Jarak</h1>
           <p className="text-xs text-gray-500">Masuk untuk mengelola atau memantau aspirasi warga.</p>
         </div>
 
