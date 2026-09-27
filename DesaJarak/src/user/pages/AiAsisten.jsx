@@ -1,0 +1,191 @@
+import { useState, useRef, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import {
+  ArrowLeft,
+  MoreVertical,
+  Paperclip,
+  Smile,
+  Mic,
+  Send,
+  CheckCheck,
+} from "lucide-react";
+
+const quickQuestions = [
+  "Bagaimana caranya melapor?",
+  "Berapa hari aspirasi ditindaklanjuti?",
+  "Apakah data pelapor dijaga privasinya?",
+];
+
+function formatTime(date) {
+  return date.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
+}
+
+export default function AiAsisten() {
+  const navigate = useNavigate();
+  const [messages, setMessages] = useState([
+    {
+      from: "bot",
+      text: "Halo! Saya asisten virtual Desa Jarak. Ada yang bisa saya bantu? 😊",
+      time: new Date(),
+    },
+  ]);
+  const [input, setInput] = useState("");
+  const [isTyping, setIsTyping] = useState(false);
+  const endRef = useRef(null);
+  const typingTimeout = useRef(null);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isTyping]);
+
+  useEffect(() => () => clearTimeout(typingTimeout.current), []);
+
+  const send = (text) => {
+    const value = text ?? input;
+    if (!value.trim()) return;
+
+    setMessages((m) => [...m, { from: "user", text: value, time: new Date() }]);
+    setInput("");
+    setIsTyping(true);
+
+    typingTimeout.current = setTimeout(() => {
+      setIsTyping(false);
+      setMessages((m) => [
+        ...m,
+        {
+          from: "bot",
+          text: "Terima kasih atas pertanyaannya. Tim kami akan segera membantu Anda.",
+          time: new Date(),
+        },
+      ]);
+    }, 1200);
+  };
+
+  return (
+    <div className="pb-4 flex flex-col h-dvh lg:h-[85dvh] max-w-2xl mx-auto lg:my-4 lg:rounded-3xl lg:overflow-hidden lg:shadow-sm lg:border lg:border-gray-200">
+      {/* Header ala WhatsApp */}
+      <div className="bg-[#075E54] px-3 pt-3 pb-3 flex items-center gap-3 text-white shrink-0">
+        <button
+          onClick={() => navigate(-1)}
+          aria-label="Kembali"
+          className="h-9 w-9 -ml-1 rounded-full flex items-center justify-center shrink-0 active:bg-white/10"
+        >
+          <ArrowLeft size={20} />
+        </button>
+        <span className="h-10 w-10 rounded-full bg-white/20 flex items-center justify-center shrink-0 overflow-hidden">
+          <img
+            src="https://api.dicebear.com/7.x/bottts/svg?seed=eAspirasi"
+            alt="Asisten E-Aspirasi"
+            className="h-full w-full object-cover"
+          />
+        </span>
+        <div className="flex-1 min-w-0">
+          <p className="font-medium leading-tight truncate">Asisten E-Aspirasi</p>
+          <p className="text-[11px] text-white/75 leading-tight">
+            {isTyping ? "sedang mengetik…" : "online"}
+          </p>
+        </div>
+        <button aria-label="Menu" className="h-9 w-9 rounded-full flex items-center justify-center shrink-0 active:bg-white/10">
+          <MoreVertical size={19} />
+        </button>
+      </div>
+
+      {/* Area chat ala WhatsApp (background pola titik-titik samar) */}
+      <div
+        className="flex-1 overflow-y-auto no-scrollbar px-3 py-3 space-y-1.5"
+        style={{
+          backgroundColor: "#eee1d1",
+          backgroundImage:
+            "radial-gradient(rgba(0,0,0,0.035) 1px, transparent 1px)",
+          backgroundSize: "18px 18px",
+        }}
+      >
+        {messages.map((m, i) => {
+          const isUser = m.from === "user";
+          const prevSameSender = i > 0 && messages[i - 1].from === m.from;
+          return (
+            <div
+              key={i}
+              className={`flex ${isUser ? "justify-end" : "justify-start"} ${
+                prevSameSender ? "mt-0.5" : "mt-2"
+              }`}
+            >
+              <div
+                className={`relative max-w-[78%] px-3 py-2 text-sm shadow-sm ${
+                  isUser
+                    ? "bg-[#DCF8C6] text-gray-800 rounded-2xl rounded-tr-sm"
+                    : "bg-white text-gray-800 rounded-2xl rounded-tl-sm"
+                }`}
+              >
+                <p className="leading-snug pr-10">{m.text}</p>
+                <span className="absolute bottom-1 right-2.5 flex items-center gap-0.5 text-[10px] text-gray-400">
+                  {formatTime(m.time)}
+                  {isUser && <CheckCheck size={13} className="text-sky-500" />}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+
+        {isTyping && (
+          <div className="flex justify-start mt-2">
+            <div className="bg-white rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm flex items-center gap-1">
+              <span className="h-1.5 w-1.5 rounded-full bg-gray-400 animate-bounce [animation-delay:-0.3s]" />
+              <span className="h-1.5 w-1.5 rounded-full bg-gray-400 animate-bounce [animation-delay:-0.15s]" />
+              <span className="h-1.5 w-1.5 rounded-full bg-gray-400 animate-bounce" />
+            </div>
+          </div>
+        )}
+
+        <div ref={endRef} />
+
+        {messages.length === 1 && !isTyping && (
+          <div className="pt-3">
+            <p className="text-xs font-medium text-gray-500 mb-2 px-1">Pertanyaan Cepat</p>
+            <div className="space-y-1.5">
+              {quickQuestions.map((q) => (
+                <button
+                  key={q}
+                  onClick={() => send(q)}
+                  className="w-full text-left text-sm bg-white rounded-xl px-3.5 py-2.5 text-[#075E54] font-medium shadow-sm active:bg-gray-50"
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Input bar ala WhatsApp */}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          send();
+        }}
+        className="flex items-center gap-2 px-2.5 py-2 bg-[#ECE5DD] shrink-0"
+      >
+        <div className="flex-1 flex items-center gap-2 bg-white rounded-full pl-3.5 pr-1.5 py-1.5">
+          <Smile size={20} className="text-gray-400 shrink-0" />
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Ketik pesan"
+            className="flex-1 text-sm outline-none placeholder:text-gray-400 min-w-0"
+          />
+          <button type="button" aria-label="Lampiran" className="h-8 w-8 rounded-full flex items-center justify-center text-gray-400 shrink-0">
+            <Paperclip size={18} />
+          </button>
+        </div>
+        <button
+          type="submit"
+          aria-label={input.trim() ? "Kirim" : "Rekam suara"}
+          className="h-11 w-11 rounded-full bg-[#075E54] text-white flex items-center justify-center shrink-0"
+        >
+          {input.trim() ? <Send size={18} /> : <Mic size={19} />}
+        </button>
+      </form>
+    </div>
+  );
+}
+
