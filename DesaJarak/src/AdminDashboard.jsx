@@ -17,7 +17,7 @@ import Berita from './pages/Berita.jsx'
 import Profil from './pages/Profil.jsx'
 import { initialProfilDesa, initialReports, initialNews } from './data/initialData.js'
 import { initialEducationModules, sortEducationModules } from './data/education.js'
-import { getAppData, saveAppData, getReports, updateReport, getNews, createNews, updateNews, deleteNewsItem, addNewsComment, getEducation, createEducation, updateEducation, deleteEducationItem } from './utils/api.js'
+import { getAppData, saveAppData, getReports, updateReport, getNews, createNews, updateNews, deleteNewsItem, addNewsComment, getEducation, createEducation, updateEducation, deleteEducationItem, getNotifications, markNotificationsRead } from './utils/api.js'
 
 const DEFAULT_NEWS_IMAGE = 'https://images.unsplash.com/photo-1504384308090-c894fdcc538d?w=900&auto=format&fit=crop&q=80'
 
@@ -31,6 +31,8 @@ export default function AdminDashboard({ adminName, onLogout }) {
   const [reports, setReports] = useState(initialReports)
   const [newsData, setNewsData] = useState(initialNews)
   const [edukasiData, setEdukasiData] = useState(() => sortEducationModules(initialEducationModules))
+  const [notifications, setNotifications] = useState([])
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0)
 
   useEffect(() => {
     getAppData()
@@ -44,11 +46,19 @@ export default function AdminDashboard({ adminName, onLogout }) {
   }, [])
 
   useEffect(() => {
-    const interval = setInterval(() => {
+    const refreshSharedData = () => {
       getReports().then(setReports).catch(() => {})
       getNews().then(setNewsData).catch(() => {})
       getEducation().then((items) => setEdukasiData(sortEducationModules(items))).catch(() => {})
-    }, 3000)
+      getNotifications()
+        .then((data) => {
+          setNotifications(data.items || [])
+          setUnreadNotificationCount(data.unreadCount || 0)
+        })
+        .catch(() => {})
+      }
+      refreshSharedData()
+      const interval = setInterval(refreshSharedData, 3000)
     return () => clearInterval(interval)
   }, [])
 
@@ -109,6 +119,16 @@ export default function AdminDashboard({ adminName, onLogout }) {
   const openReportDetail = (reportId) => setActiveReportId(reportId)
   const closeReportDetail = () => setActiveReportId(null)
   const activeReport = reports.find((r) => r.id === activeReportId) || null
+
+  const openNotifications = () => {
+    setNotifOpen(true)
+    markNotificationsRead()
+      .then(({ readAt }) => {
+        setUnreadNotificationCount(0)
+        setNotifications((current) => current.map((notification) => ({ ...notification, readAt: notification.readAt || readAt })))
+      })
+      .catch(() => showToast('Gagal menyimpan status notifikasi dibaca.'))
+  }
 
   const saveReportDetail = async (reportId, status, reply) => {
     try {
@@ -262,8 +282,9 @@ export default function AdminDashboard({ adminName, onLogout }) {
     <div className="app-shell">
       <Header
         namaDesa={profil.namaDesa}
+        notificationCount={unreadNotificationCount}
         onGoHome={() => switchTab('beranda')}
-        onOpenNotifications={() => setNotifOpen(true)}
+        onOpenNotifications={openNotifications}
         onToggleProfileMenu={() => setProfileMenuOpen((v) => !v)}
       />
 
@@ -345,7 +366,7 @@ export default function AdminDashboard({ adminName, onLogout }) {
         onReply={replyToNewsComment}
       />
 
-      <NotificationModal visible={notifOpen} onClose={() => setNotifOpen(false)} onAction={handleNotificationAction} />
+      <NotificationModal visible={notifOpen} notifications={notifications} onClose={() => setNotifOpen(false)} onAction={handleNotificationAction} />
     </div>
   )
 }

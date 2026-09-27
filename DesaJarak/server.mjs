@@ -78,6 +78,27 @@ const normalizeReportComment = (comment, index, reportId) => ({
   text: String(comment.text || '').trim(),
 })
 
+const detectReportUrgency = (report) => /\b(darurat|berbahaya|bahaya|roboh|putus|kebakaran|banjir|longsor|ambruk|kecelakaan|parah|mengancam)\b/i.test(`${report.title} ${report.description}`)
+
+const recordNotification = async ({ title, description, icon, color, action, eventKey = null }) => {
+  const result = await pool.query(
+    'INSERT INTO notifications (title, description, icon, color, action, event_key) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (event_key) DO NOTHING RETURNING id, title, description, icon, color, action, created_at, read_at',
+    [title, description, icon, color, JSON.stringify(action), eventKey],
+  )
+  return result.rows[0]
+}
+
+const formatNotification = (row) => ({
+  id: row.id,
+  title: row.title,
+  desc: row.description,
+  icon: row.icon,
+  color: row.color,
+  action: row.action,
+  createdAt: row.created_at,
+  readAt: row.read_at,
+})
+
 const normalizeNewsComment = (comment, index, postId) => {
   const text = comment.text || comment.teks || ''
   if (!text || defaultNewsComments.has(text.trim())) return null
@@ -188,6 +209,7 @@ const initDatabase = async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS app_data (data_key TEXT PRIMARY KEY, data_value JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE TABLE IF NOT EXISTS users (id BIGSERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, fullname TEXT NOT NULL, password_hash TEXT NOT NULL, password_salt TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+    CREATE TABLE IF NOT EXISTS notifications (id BIGSERIAL PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL, icon TEXT NOT NULL, color TEXT NOT NULL, action JSONB NOT NULL, event_key TEXT UNIQUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), read_at TIMESTAMPTZ);
   `)
   for (const [key, value] of Object.entries(seedData)) {
     await pool.query('INSERT INTO app_data (data_key, data_value) VALUES ($1, $2) ON CONFLICT (data_key) DO NOTHING', [key, JSON.stringify(value)])
@@ -204,6 +226,19 @@ const initDatabase = async () => {
   const storedNews = await pool.query('SELECT data_value FROM app_data WHERE data_key = $1', ['news'])
   const normalizedNews = migrateNews(storedNews.rows[0]?.data_value || [])
   await pool.query('UPDATE app_data SET data_value = $1, updated_at = NOW() WHERE data_key = $2', [JSON.stringify(normalizedNews), 'news'])
+  const storedReports = await pool.query('SELECT data_value FROM app_data WHERE data_key = $1', ['reports'])
+  for (const report of storedReports.rows[0]?.data_value || []) {
+    if (report.urgency === 'Tinggi') {
+      await recordNotification({
+        title: 'Laporan berurgensi tinggi perlu perhatian',
+        description: `${report.id}: ${report.title}`,
+        icon: 'fa-triangle-exclamation',
+        color: 'bg-rose-50 text-rose-600',
+        action: { type: 'report', id: report.id },
+        eventKey: `high-urgency-${report.id}`,
+      })
+    }
+  }
   const storedUserNews = await pool.query('SELECT data_value FROM app_data WHERE data_key = $1', ['userBerita'])
   const userNews = (storedUserNews.rows[0]?.data_value || []).map((item) => {
     let image = item.image
@@ -220,6 +255,16 @@ const initDatabase = async () => {
 
 const handleApi = async (request, response, pathname) => {
   if (request.method === 'GET' && pathname === '/api/health') return sendJson(response, 200, { ok: true })
+  if (request.method === 'GET' && pathname === '/api/notifications') {
+    const result = await pool.query('SELECT id, title, description, icon, color, action, created_at, read_at FROM notifications ORDER BY created_at DESC LIMIT 100')
+    const unread = await pool.query('SELECT COUNT(*)::int AS count FROM notifications WHERE read_at IS NULL')
+    return sendJson(response, 200, { items: result.rows.map(formatNotification), unreadCount: unread.rows[0]?.count || 0 })
+  }
+  if (request.method === 'POST' && pathname === '/api/notifications/read') {
+    const readAt = new Date().toISOString()
+    await pool.query('UPDATE notifications SET read_at = $1 WHERE read_at IS NULL', [readAt])
+    return sendJson(response, 200, { ok: true, readAt })
+  }
   if (request.method === 'GET' && pathname === '/api/reports') {
     const result = await pool.query('SELECT data_value FROM app_data WHERE data_key = $1', ['reports'])
     return sendJson(response, 200, result.rows[0]?.data_value || [])
@@ -247,7 +292,7 @@ const handleApi = async (request, response, pathname) => {
         ownerName: String(body.ownerName || 'Warga Desa').trim(),
         category: categoryMap[body.kategori] || body.kategori || 'Lainnya',
         status: 'Masuk',
-        urgency: 'Sedang',
+        urgency: detectReportUrgency({ title: body.judul, description: body.deskripsi }) ? 'Tinggi' : 'Sedang',
         votes: 0,
         comments: 0,
         image: body.image || '',
@@ -264,6 +309,14 @@ const handleApi = async (request, response, pathname) => {
         statusHistory: [{ status: 'Masuk', time: now.toISOString(), reply: '' }],
       }
       return { reports: [report, ...items], value: report }
+    })
+    await recordNotification({
+      title: report.urgency === 'Tinggi' ? 'Laporan baru dengan urgensi tinggi' : 'Laporan baru masuk',
+      description: `${report.id}: ${report.title}`,
+      icon: report.urgency === 'Tinggi' ? 'fa-triangle-exclamation' : 'fa-file-circle-plus',
+      color: report.urgency === 'Tinggi' ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600',
+      action: { type: 'report', id: report.id },
+      eventKey: `report-created-${report.id}`,
     })
     return sendJson(response, 201, report)
   }
@@ -306,6 +359,17 @@ const handleApi = async (request, response, pathname) => {
       const next = { ...current, commentsList, comments: commentsList.length, aiSuggestion }
       return { reports: items.map((item) => String(item.id) === id ? next : item), value: next }
     })
+    if (updated?.commentsList?.length) {
+      const latestComment = updated.commentsList.at(-1)
+      await recordNotification({
+        title: 'Komentar baru pada laporan',
+        description: `${latestComment.name} mengomentari ${updated.id}: ${updated.title}`,
+        icon: 'fa-comment',
+        color: 'bg-emerald-50 text-emerald-600',
+        action: { type: 'report', id: updated.id },
+        eventKey: `report-comment-${latestComment.id}`,
+      })
+    }
     return updated ? sendJson(response, 201, updated) : sendJson(response, 404, { message: 'Laporan tidak ditemukan.' })
   }
   if (request.method === 'GET' && pathname === '/api/education') {
@@ -387,6 +451,16 @@ const handleApi = async (request, response, pathname) => {
       }
       return { news: [news, ...items], value: news }
     })
+    if (created.status === 'Draft') {
+      await recordNotification({
+        title: 'Berita menunggu review',
+        description: `Draf "${created.title}" dibuat dan menunggu dipublikasikan.`,
+        icon: 'fa-newspaper',
+        color: 'bg-blue-50 text-blue-600',
+        action: { type: 'tab', tab: 'berita' },
+        eventKey: `news-draft-${created.id}`,
+      })
+    }
     return sendJson(response, 201, created)
   }
   if (request.method === 'PUT' && /^\/api\/news\/[^/]+$/.test(pathname)) {
@@ -442,6 +516,16 @@ const handleApi = async (request, response, pathname) => {
       const nextItem = { ...current, commentsList, comments: countComments(commentsList) }
       return { news: items.map((item) => String(item.id) === id ? nextItem : item), value: nextItem }
     })
+    if (updated && role === 'user') {
+      await recordNotification({
+        title: 'Komentar baru pada berita desa',
+        description: `${comment.name} mengomentari "${updated.title}".`,
+        icon: 'fa-comment',
+        color: 'bg-emerald-50 text-emerald-600',
+        action: { type: 'tab', tab: 'berita' },
+        eventKey: `news-comment-${comment.id}`,
+      })
+    }
     return updated ? sendJson(response, 201, updated) : sendJson(response, 404, { message: 'Berita tidak ditemukan atau tidak dapat dikomentari.' })
   }
   if (request.method === 'GET' && pathname === '/api/data') {

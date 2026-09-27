@@ -1,4 +1,4 @@
-export default function Header({ namaDesa, onGoHome, onOpenNotifications, onToggleProfileMenu }) {
+export default function Header({ namaDesa, notificationCount = 0, onGoHome, onOpenNotifications, onToggleProfileMenu }) {
   return (
     <header className="bg-white text-emerald-700 p-3.5 pt-4 md:py-3 rounded-b-2xl md:rounded-none shadow-md z-20 flex-shrink-0 relative sticky top-0">
       <div className="flex items-center justify-between gap-2 max-w-7xl mx-auto">
@@ -26,7 +26,11 @@ export default function Header({ namaDesa, onGoHome, onOpenNotifications, onTogg
             className="w-9 h-9 rounded-full bg-emerald-50 hover:bg-emerald-100 flex items-center justify-center text-emerald-700 transition active:scale-95 relative"
           >
             <i className="fa-solid fa-bell text-sm"></i>
-            <span className="absolute -top-0.5 -right-0.5 min-w-[17px] h-[17px] px-1 bg-rose-500 text-white rounded-full border-2 border-white text-[8px] font-bold flex items-center justify-center">3</span>
+            {notificationCount > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 min-w-[17px] h-[17px] px-1 bg-rose-500 text-white rounded-full border-2 border-white text-[8px] font-bold flex items-center justify-center">
+                {notificationCount > 99 ? '99+' : notificationCount}
+              </span>
+            )}
           </button>
           <button
             onClick={onToggleProfileMenu}

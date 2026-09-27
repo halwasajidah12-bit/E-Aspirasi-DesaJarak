@@ -20,6 +20,12 @@ export const register = (user) => jsonRequest('/auth/register', {
 
 export const getAppData = () => jsonRequest('/data')
 
+export const getNotifications = () => jsonRequest('/notifications')
+
+export const markNotificationsRead = () => jsonRequest('/notifications/read', {
+  method: 'POST',
+})
+
 export const getReports = () => jsonRequest('/reports')
 
 export const updateReport = (id, updates) => jsonRequest(`/reports/${encodeURIComponent(id)}`, {

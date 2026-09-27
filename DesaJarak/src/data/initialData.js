@@ -129,8 +129,5 @@ export const initialEdukasi = [
   },
 ]
 
-export const notifications = [
-  { icon: 'fa-triangle-exclamation', color: 'bg-rose-50 text-rose-600', title: '2 laporan urgensi tinggi', desc: 'JR-001 dan JR-021 membutuhkan perhatian.', time: '10 menit lalu', action: { type: 'report', id: 'JR-001' } },
-  { icon: 'fa-comment', color: 'bg-emerald-50 text-emerald-600', title: 'Komentar baru pada laporan', desc: 'Ada komentar warga pada laporan fasilitas umum.', time: '35 menit lalu', action: { type: 'report', id: 'JR-021' } },
-  { icon: 'fa-newspaper', color: 'bg-blue-50 text-blue-600', title: 'Berita menunggu review', desc: 'Draf berita AI siap diedit sebelum dipublish.', time: '1 jam lalu', action: { type: 'tab', tab: 'berita' } },
-]
+export const notifications = []
+
