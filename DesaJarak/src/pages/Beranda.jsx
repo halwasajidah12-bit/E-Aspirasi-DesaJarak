@@ -11,9 +11,9 @@ export default function Beranda({ profil, reports, news, stats, onSwitchTab, onO
       <div className="bg-white p-3.5 rounded-2xl shadow-sm border border-emerald-100 flex items-center justify-between gap-2">
         <div className="min-w-0">
           <span className="inline-block text-[10px] xs:text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 truncate">
-            Halo, Pak Kades 👋
+            Halo, Admin 👋
           </span>
-          <h2 className="text-xs xs:text-sm font-bold text-gray-800 mt-1 truncate">Platform Admin E-Aspirasi</h2>
+          <h2 className="text-xs xs:text-sm font-bold text-gray-800 mt-1 truncate">Dashboard Admin E-Aspirasi</h2>
           <p className="text-[10px] text-gray-400 truncate">Desa {profil.namaDesa} • Tanggap Warga</p>
         </div>
         <div className="text-right flex-shrink-0">
