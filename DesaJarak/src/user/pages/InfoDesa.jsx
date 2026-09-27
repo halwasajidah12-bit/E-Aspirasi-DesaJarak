@@ -2,33 +2,36 @@ import { useState, useEffect } from "react";
 import { ArrowLeft } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { profilDesa } from "../data/profilDesa";
+import { getAppData } from "../../utils/api.js";
 
 const tabs = ["Informasi Desa", "Perangkat Desa", "Laporan Tahunan"];
 
-// Foto desa — pakai foto yang sama dengan sisi admin (initialProfilDesa.image)
-// plus 2 foto suasana desa lain, supaya carousel tampil konsisten & tidak rusak.
 const slides = [
-  profilDesa.image,
-  "https://images.unsplash.com/photo-1500382017468-9049fed747ef?w=1200&auto=format&fit=crop&q=80",
-  "https://images.unsplash.com/photo-1500076656116-558758c991c1?w=1200&auto=format&fit=crop&q=80",
+  "/images/jarak.jpg",
+  "/images/jembatan.jpg",
+  "/images/air.jpg",
 ];
 
-// Sinkron dengan sisi admin (src/data/initialData.js -> initialProfilDesa).
-const kependudukan = [
-  ["Total Penduduk", `${profilDesa.totalPenduduk.toLocaleString("id-ID")} jiwa`],
-  ["Laki-laki", `${profilDesa.laki.toLocaleString("id-ID")} jiwa`],
-  ["Perempuan", `${profilDesa.perempuan.toLocaleString("id-ID")} jiwa`],
-  ["Kepala Keluarga", `${profilDesa.kk.toLocaleString("id-ID")} KK`],
-  ["Usia Produktif (15-59)", `${profilDesa.produktif.toLocaleString("id-ID")} Jiwa`],
-  ["Lansia (65+)", `${profilDesa.lansia.toLocaleString("id-ID")} jiwa`],
-];
-
-const umum = [
-  ["Luas Wilayah", profilDesa.luasWilayah],
-  ["Dusun", profilDesa.wilayahDusun],
-  ["Jumlah RT / RW", `${profilDesa.jumlahRt} RT / ${profilDesa.jumlahRw} RW`],
-  ["Kode Pos", "64175"],
-];
+const fromAdminProfile = (profile) => {
+  const rtRw = String(profile.jumlahRtRw || "").match(/\d+/g) || [];
+  return {
+    ...profilDesa,
+    namaDesa: profile.namaDesa ?? profilDesa.namaDesa,
+    kecamatan: profile.kecamatan ?? profilDesa.kecamatan,
+    kabupaten: profile.kabupaten ?? profilDesa.kabupaten,
+    provinsi: profile.provinsi ?? profilDesa.provinsi,
+    luasWilayah: profile.luasWilayah ?? profilDesa.luasWilayah,
+    wilayahDusun: profile.wilayahDusun ?? profilDesa.wilayahDusun,
+    jumlahRt: Number(rtRw[0] ?? profilDesa.jumlahRt),
+    jumlahRw: Number(rtRw[1] ?? profilDesa.jumlahRw),
+    totalPenduduk: Number(profile.totalPenduduk ?? profilDesa.totalPenduduk),
+    laki: Number(profile.laki ?? profilDesa.laki),
+    perempuan: Number(profile.perempuan ?? profilDesa.perempuan),
+    kk: Number(profile.kk ?? profilDesa.kk),
+    produktif: Number(profile.produktif ?? profilDesa.produktif),
+    lansia: Number(profile.lansia ?? profilDesa.lansia),
+  };
+};
 
 const perangkat = [
   ["Kepala Desa", "Sutrisno, S.Sos"],
@@ -62,7 +65,42 @@ function InfoTable({ title, rows }) {
 export default function InfoDesa() {
   const [tab, setTab] = useState(tabs[0]);
   const [active, setActive] = useState(0);
+  const [profil, setProfil] = useState(profilDesa);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    let mounted = true;
+    const refreshProfile = () => {
+      getAppData()
+        .then((data) => {
+          if (mounted && data.profil) setProfil(fromAdminProfile(data.profil));
+        })
+        .catch(() => {});
+    };
+
+    refreshProfile();
+    const id = setInterval(refreshProfile, 3000);
+    return () => {
+      mounted = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  const kependudukan = [
+    ["Total Penduduk", `${profil.totalPenduduk.toLocaleString("id-ID")} jiwa`],
+    ["Laki-laki", `${profil.laki.toLocaleString("id-ID")} jiwa`],
+    ["Perempuan", `${profil.perempuan.toLocaleString("id-ID")} jiwa`],
+    ["Kepala Keluarga", `${profil.kk.toLocaleString("id-ID")} KK`],
+    ["Usia Produktif (15-59)", `${profil.produktif.toLocaleString("id-ID")} Jiwa`],
+    ["Lansia (65+)", `${profil.lansia.toLocaleString("id-ID")} jiwa`],
+  ];
+
+  const umum = [
+    ["Luas Wilayah", profil.luasWilayah],
+    ["Dusun", profil.wilayahDusun],
+    ["Jumlah RT / RW", `${profil.jumlahRt} RT / ${profil.jumlahRw} RW`],
+    ["Kode Pos", "64175"],
+  ];
 
   // auto-geser carousel setiap 4 detik
   useEffect(() => {
@@ -110,21 +148,21 @@ export default function InfoDesa() {
 
         
         <div className="absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/75 via-black/25 to-transparent px-5 pt-16 pb-4 text-white">
-          <p className="font-bold text-lg sm:text-xl">Desa {profilDesa.namaDesa}</p>
+          <p className="font-bold text-lg sm:text-xl">Desa {profil.namaDesa}</p>
           <p className="text-xs text-white/85 mt-0.5">
-            Kecamatan {profilDesa.kecamatan}, Kabupaten {profilDesa.kabupaten}, Provinsi {profilDesa.provinsi}
+            Kecamatan {profil.kecamatan}, Kabupaten {profil.kabupaten}, Provinsi {profil.provinsi}
           </p>
           <div className="flex gap-6 mt-2">
             <div>
-              <p className="font-bold">{profilDesa.totalPenduduk.toLocaleString("id-ID")}</p>
+              <p className="font-bold">{profil.totalPenduduk.toLocaleString("id-ID")}</p>
               <p className="text-xs text-white/80">Jiwa</p>
             </div>
             <div>
-              <p className="font-bold">{profilDesa.kk.toLocaleString("id-ID")}</p>
+              <p className="font-bold">{profil.kk.toLocaleString("id-ID")}</p>
               <p className="text-xs text-white/80">KK</p>
             </div>
             <div>
-              <p className="font-bold">{profilDesa.jumlahRt}</p>
+              <p className="font-bold">{profil.jumlahRt}</p>
               <p className="text-xs text-white/80">RT</p>
             </div>
           </div>

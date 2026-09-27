@@ -5,7 +5,7 @@ export const initialProfilDesa = {
   provinsi: 'Jawa Timur',
   kodeDesa: '3506152009',
   luasWilayah: '12,4 km²',
-  image: 'https://images.unsplash.com/photo-1494526585095-c41746248156?w=900&auto=format&fit=crop&q=80',
+  image: 'public/images/jarak.jpg',
   wilayahDusun: 'Jarak Lor & Kedungrejo',
   jumlahRtRw: '11 RT / 03 RW',
   totalPenduduk: 4284,
