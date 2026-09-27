@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "build": "npm --prefix DesaJarak install --no-audit --no-fund && npm --prefix DesaJarak run build",
+    "build": "node scripts/build.mjs",
     "start": "npm --prefix DesaJarak run start"
   },
   "engines": {
