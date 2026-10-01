@@ -924,11 +924,11 @@ const handleApi = async (request, response, pathname) => {
 
       try {
         const insertRes = await pool.query(
-          `INSERT INTO users (username, fullname, password_hash, password_salt, nama, email, password, role, poin)
-           VALUES ($1, $2, $3, $4, $2, $5, $6, 'warga', 0)
-           RETURNING *`,
-          [username, fullname, credentials.hash, credentials.salt, email, password],
-        );
+  `INSERT INTO users (username, fullname, password_hash, password_salt, nama, email, password, role, poin)
+   VALUES ($1, $2, $3, $4, $8, $5, $6, 'warga', 0)
+   RETURNING *`,
+  [username, fullname, credentials.hash, credentials.salt, email, password, fullname],
+);
         const newUser = insertRes.rows[0];
 
         return sendJson(response, 201, {
