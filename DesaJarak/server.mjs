@@ -452,12 +452,12 @@ const initDatabase = async () => {
   ]) {
     const credentials = hashPassword(rawPassword);
     const email = `${username}@desa.id`;
-    await pool.query(
-     `INSERT INTO users (username, fullname, password_hash, password_salt, nama, email, password, role, poin)
- VALUES ($1, $2, $3, $4, $8, $5, $6, $7, 0)
- ON CONFLICT (username) DO NOTHING`,
-[username, fullname, credentials.hash, credentials.salt, email, rawPassword, role, fullname],
-    );
+   await pool.query(
+  `INSERT INTO users (username, fullname, password_hash, password_salt, nama, email, password, role, poin)
+   VALUES ($1, $2, $3, $4, $2, $5, $6, $7, 0)
+   ON CONFLICT (username) DO NOTHING`,
+  [username, fullname, credentials.hash, credentials.salt, email, rawPassword, role],
+  ); 
   }
 };
 
@@ -923,11 +923,11 @@ const handleApi = async (request, response, pathname) => {
       const credentials = hashPassword(password);
 
       try {
-        const insertRes = await pool.query(
+      const insertRes = await pool.query(
   `INSERT INTO users (username, fullname, password_hash, password_salt, nama, email, password, role, poin)
-   VALUES ($1, $2, $3, $4, $8, $5, $6, 'warga', 0)
+   VALUES ($1, $2, $3, $4, $2, $5, $6, 'warga', 0)
    RETURNING *`,
-  [username, fullname, credentials.hash, credentials.salt, email, password, fullname],
+  [username, fullname, credentials.hash, credentials.salt, email, password],
 );
         const newUser = insertRes.rows[0];
 
