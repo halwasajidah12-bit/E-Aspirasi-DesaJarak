@@ -88,13 +88,12 @@ export const mapApiReport = (report) => ({
   statusHistory: report.statusHistory || [],
 })
 
-// Label & warna status — nilai key HARUS sama dengan status di admin
-// (Masuk, Diproses, Selesai) supaya kartu laporan konsisten di kedua sisi.
+
 export const statusColor = {
-  Masuk: "bg-sky-100 text-sky-700",
-  Diproses: "bg-accent-500 text-white",
-  Selesai: "bg-brand-700 text-white",
-  Ditolak: "bg-rose-100 text-rose-700",
+  Masuk: "bg-blue-100 text-blue-800",
+  Diproses: "bg-amber-100 text-amber-800",
+  Selesai: "bg-emerald-100 text-emerald-800",
+  Ditolak: "bg-gray-200 text-gray-700",
 };
 
 export const kategoriList = ["Jalan & Fasilitas", "Lingkungan", "Penerangan"];

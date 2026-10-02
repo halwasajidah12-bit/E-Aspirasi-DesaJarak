@@ -51,21 +51,21 @@ export default function LacakLaporan() {
     <div className="pb-8">
       <PageHeader title="Lacak Laporan" subtitle="Cari laporan dan beri vote prioritas"/>
 
-      <div className="px-4 sm:px-6 -mt-[150px]">
+      <div className="px-4 sm:px-6 mt-3.5">
         <div className="flex gap-2.5 mb-3">
-          <div className="flex-1 flex items-center gap-2 bg-white rounded-full px-4 py-2.5 shadow-sm">
+          <div className="flex-1 flex items-center gap-2 bg-white rounded-xl border border-gray-200 px-3 py-2.5 shadow-sm focus-within:border-emerald-500">
             <Search size={16} className="text-gray-400" />
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Cari Judul, Jalan, nomor, RT/RW...."
-              className="flex-1 text-sm outline-none placeholder:text-gray-400"
+              className="flex-1 text-xs outline-none bg-transparent placeholder:text-gray-400"
             />
           </div>
           <Link
             to="/aspirasi"
             aria-label="Buat laporan"
-            className="h-10 w-10 rounded-full bg-brand-700 text-white flex items-center justify-center shrink-0"
+            className="h-10 w-10 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center shrink-0 shadow-sm transition active:scale-95"
           >
             <Plus size={20} />
           </Link>
@@ -76,8 +76,8 @@ export default function LacakLaporan() {
             <button
               key={s}
               onClick={() => setStatus(s)}
-              className={`shrink-0 text-sm font-medium rounded-full px-4 py-1.5 ${
-                status === s ? "bg-brand-700 text-white" : "bg-white text-gray-500"
+              className={`shrink-0 text-xs rounded-xl px-3.5 py-1.5 transition ${
+                status === s ? "bg-emerald-600 text-white font-bold shadow-sm" : "bg-white border border-gray-200 text-gray-700 font-medium"
               }`}
             >
               {s}
@@ -93,8 +93,8 @@ export default function LacakLaporan() {
             <button
               key={k}
               onClick={() => setKategori(k)}
-              className={`shrink-0 text-xs font-medium rounded-full px-3 py-1 ${
-                kategori === k ? "bg-brand-700 text-white" : "bg-white text-gray-500"
+              className={`shrink-0 text-xs rounded-xl px-3 py-1.5 transition ${
+                kategori === k ? "bg-emerald-600 text-white font-bold shadow-sm" : "bg-white border border-gray-200 text-gray-700 font-medium"
               }`}
             >
               {k}
@@ -107,7 +107,7 @@ export default function LacakLaporan() {
             <ReportCard key={i} report={r} />
           ))}
           {filtered.length === 0 && (
-            <p className="md:col-span-full text-center text-sm text-gray-400 py-10">Tidak ada laporan ditemukan.</p>
+            <p className="md:col-span-full text-center text-xs text-gray-500 font-medium py-8 bg-white rounded-2xl border border-gray-100">Tidak ada laporan ditemukan.</p>
           )}
         </div>
       </div>

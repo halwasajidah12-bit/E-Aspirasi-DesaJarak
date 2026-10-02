@@ -13,13 +13,13 @@ function Stepper({ current }) {
         <div key={label} className="flex items-center gap-2">
           <div className="flex items-center gap-1.5">
             <span
-              className={`h-6 w-6 rounded-full flex items-center justify-center text-xs font-semibold ${
-                i <= current ? "bg-brand-700 text-white" : "bg-gray-200 text-gray-400"
+              className={`h-6 w-6 rounded-full flex items-center justify-center text-[11px] font-bold ${
+                i <= current ? "bg-emerald-600 text-white" : "bg-gray-200 text-gray-400"
               }`}
             >
               {i + 1}
             </span>
-            <span className={`text-xs font-medium ${i <= current ? "text-brand-700" : "text-gray-400"}`}>
+            <span className={`text-xs font-medium ${i <= current ? "text-emerald-700" : "text-gray-400"}`}>
               {label}
             </span>
           </div>
@@ -55,27 +55,31 @@ export default function Aspirasi({ session }) {
   ];
 
   return (
-    <div className="pb-8">
-      <div  className="bg-gradient-to-b from-brand-700 via-brand-500 to-mint-50 px-5 pt-3 pb-[160px] text-center text-white">
-        <button
-          onClick={() => (step === 0 ? navigate(-1) : setStep((s) => s - 1))}
-          aria-label="Kembali"
-          className="h-9 w-9 rounded-full bg-white/90 text-brand-700 flex items-center justify-center mb-3"
-        >
-          <ArrowLeft size={18} />
-        </button>
-        <h1 className="text-3xl font-bold text-center">{titleByStep[step]}</h1>
-        <p className="text-center text-white/80 text-lg mt-1">{subtitleByStep[step]}</p>
+    <div className="px-4 sm:px-6 py-4 pb-8 space-y-3.5">
+      <div className="bg-gradient-to-r from-emerald-800 to-emerald-700 text-white p-4 rounded-2xl shadow-sm">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => (step === 0 ? navigate(-1) : setStep((s) => s - 1))}
+            aria-label="Kembali"
+            className="h-9 w-9 rounded-full bg-white/90 hover:bg-white text-emerald-700 flex items-center justify-center shrink-0 transition active:scale-95"
+          >
+            <ArrowLeft size={18} />
+          </button>
+          <div className="min-w-0 space-y-1">
+            <h1 className="text-base font-bold leading-tight">{titleByStep[step]}</h1>
+            <p className="text-xs text-emerald-100">{subtitleByStep[step]}</p>
+          </div>
+        </div>
       </div>
 
-      <div className="mx-4 -mt-[145px] bg-white rounded-3xl shadow-sm p-5">
+      <div className="bg-white rounded-2xl border border-emerald-100 shadow-sm p-4">
         <Stepper current={step} />
 
         {step === 0 && (
           <div className="mt-6">
-            <div className="border-2 border-dashed border-brand-200 rounded-2xl flex flex-col items-center py-8 px-4">
-              <ScanLine size={40} className="text-brand-700" />
-              <p className="font-semibold mt-3">Scan QR CODE</p>
+            <div className="border-2 border-dashed border-emerald-200 bg-emerald-50/50 rounded-2xl flex flex-col items-center py-8 px-4">
+              <ScanLine size={40} className="text-emerald-600" />
+              <p className="text-sm font-bold text-gray-800 mt-3">Scan QR CODE</p>
               <p className="text-xs text-gray-500 text-center mt-1">
                 Scan QR di titik infrastruktur
               </p>
@@ -83,7 +87,7 @@ export default function Aspirasi({ session }) {
 
             <div className="flex items-center gap-3 my-5">
               <span className="h-px bg-gray-200 flex-1" />
-              <span className="text-xs text-gray-400">atau isi manual</span>
+              <span className="text-[10px] text-gray-400">atau isi manual</span>
               <span className="h-px bg-gray-200 flex-1" />
             </div>
 
@@ -132,19 +136,19 @@ export default function Aspirasi({ session }) {
               />
             </Field>
 
-            <p className="text-sm font-medium mt-4 mb-2">
-              <span className="text-red-500">*</span>Kategori
+            <p className="text-xs font-semibold text-gray-700 mt-4 mb-1">
+              <span className="text-rose-500">*</span>Kategori
             </p>
-            <div className="grid grid-cols-3 gap-2.5">
+            <div className="grid grid-cols-3 gap-2">
               {kategoriList.map((k) => (
                 <button
                   key={k}
                   type="button"
                   onClick={() => setForm((f) => ({ ...f, kategori: k }))}
-                  className={`rounded-xl border py-2.5 text-sm font-medium ${
+                  className={`rounded-xl border py-2 text-xs font-semibold transition active:scale-95 ${
                     form.kategori === k
-                      ? "border-brand-700 bg-brand-50 text-brand-800"
-                      : "border-gray-200 text-gray-600"
+                      ? "border-emerald-600 bg-emerald-50 text-emerald-700"
+                      : "border-gray-200 bg-white text-gray-600 hover:bg-emerald-50"
                   }`}
                 >
                   {k}
@@ -167,10 +171,10 @@ export default function Aspirasi({ session }) {
         {step === 2 && (
           <div className="mt-6">
             <p className="text-center text-xs text-gray-400 mb-4">Foto Laporan</p>
-            <p className="text-sm font-medium mb-2">Foto Lokasi (Opsional)</p>
-            <label className="border border-gray-200 rounded-2xl flex flex-col items-center justify-center py-10 cursor-pointer">
-              <Camera size={34} className="text-gray-400" />
-              <p className="font-semibold mt-3 text-gray-700">ambil foto/pilih dari galeri</p>
+            <p className="text-xs font-semibold text-gray-700 mb-1">Foto Lokasi (Opsional)</p>
+            <label className="border-2 border-dashed border-emerald-200 bg-emerald-50/50 hover:bg-emerald-50 transition rounded-2xl flex flex-col items-center justify-center py-10 cursor-pointer">
+              <Camera size={34} className="text-emerald-600" />
+              <p className="text-sm font-bold mt-3 text-gray-700">ambil foto/pilih dari galeri</p>
               <p className="text-xs text-gray-400 mt-1">maks 5 foto, 10 MB .jpg .png</p>
               <input type="file" accept="image/*" multiple className="hidden" />
             </label>
@@ -181,7 +185,7 @@ export default function Aspirasi({ session }) {
           {step > 0 && (
             <button
               onClick={() => setStep((s) => s - 1)}
-              className="flex-1 rounded-full border border-gray-200 py-2.5 font-semibold text-gray-500"
+              className="flex-1 rounded-xl border border-emerald-300 text-emerald-700 hover:bg-emerald-50 py-3 text-xs font-semibold transition active:scale-95"
             >
               Kembali
             </button>
@@ -198,7 +202,7 @@ export default function Aspirasi({ session }) {
               }
             }}
             disabled={submitting}
-            className={`flex-1 rounded-full bg-brand-700 text-white py-2.5 font-semibold ${
+            className={`flex-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white py-3 text-xs font-bold shadow-md transition active:scale-95 disabled:opacity-60 ${
               step === 0 ? "w-full" : ""
             }`}
           >
@@ -213,11 +217,11 @@ export default function Aspirasi({ session }) {
 function Field({ label, required, children, className = "" }) {
   return (
     <label className={`block ${className}`}>
-      <span className="text-sm font-medium">
-        {required && <span className="text-red-500">*</span>}
+      <span className="text-xs font-semibold text-gray-700">
+        {required && <span className="text-rose-500">*</span>}
         {label}
       </span>
-      <div className="mt-1.5">{children}</div>
+      <div className="mt-1">{children}</div>
     </label>
   );
 }

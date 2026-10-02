@@ -24,21 +24,21 @@ export default {
           cardBg: '#ebfbf2',
           surface: '#ffffff',
         },
-        // Numeric brand scale used throughout the citizen/user pages (src/user/**)
+        // Numeric brand scale used throughout the citizen/user pages (src/user/**)4
         brand: {
-          50: '#eafcf1',
-          100: '#d7f5e2',
-          200: '#c3f0d6',
-          500: '#22c55e',
-          600: '#16a34a',
-          700: '#15803d',
-          800: '#12813f',
-          900: '#0f6b34',
-          950: '#0b4a26',
+        50:  '#ecfdf5',
+        100: '#d1fae5',
+        200: '#a7f3d0',
+        500: '#34d399',
+        600: '#10b981',
+        700: '#059669',  // = emerald-600, primer admin
+        800: '#047857',  // = emerald-700, teks hijau admin
+        900: '#065f46',  // = emerald-800
+        950: '#064e3b',
         },
         mint: {
-          50: '#eafcf1',
-          100: '#e1faec',
+          50:  '#e6faf0',
+          100: '#d1fae5',
         },
         accent: {
           500: '#f5a623',

@@ -11,9 +11,9 @@ export default function ChatWidget() {
     <button
       onClick={() => navigate("/ai-asisten")}
       aria-label="Buka AI Asisten"
-      className="absolute right-4 bottom-20 h-12 w-12 rounded-full bg-brand-700 text-white shadow-lg flex items-center justify-center z-30"
+      className="fixed bottom-20 right-3.5 lg:bottom-6 lg:right-6 z-30 w-12 h-12 rounded-full bg-emerald-600 text-white flex items-center justify-center shadow-xl ai-float-glow active:scale-90 transition"
     >
-      <Bot size={24} />
+      <Bot size={22} />
     </button>
   );
 }

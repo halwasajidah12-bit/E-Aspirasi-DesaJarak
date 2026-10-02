@@ -9,41 +9,41 @@ const fields = [
 ];
 
 const shortcuts = [
-  { to: "/riwayat", icon: History, label: "Riwayat Anda", bg: "bg-amber-100 text-amber-600" },
-  { to: "/aspirasi", icon: FileText, label: "Mulai Aspirasi", bg: "bg-red-100 text-red-500" },
-  { to: "/edukasi", icon: GraduationCap, label: "Edukasi Anda", bg: "bg-sky-100 text-sky-600" },
+  { to: "/riwayat", icon: History, label: "Riwayat Anda", bg: "bg-amber-50 text-amber-600 border border-amber-100" },
+  { to: "/aspirasi", icon: FileText, label: "Mulai Aspirasi", bg: "bg-rose-50 text-rose-600 border border-rose-100" },
+  { to: "/edukasi", icon: GraduationCap, label: "Edukasi Anda", bg: "bg-blue-50 text-blue-600 border border-blue-100" },
 ];
 
 export default function Akun() {
   const navigate = useNavigate();
 
   return (
-    <div className="pb-8">
-      <div  className="relative bg-gradient-to-b from-brand-700 via-brand-500 to-mint-50 px-5 pt-3 pb-[210px] text-center text-white">
+    <div className="px-4 sm:px-6 py-4 pb-8 space-y-3.5">
+      <div className="relative bg-gradient-to-r from-emerald-800 to-emerald-700 rounded-2xl shadow-sm px-4 pt-4 pb-5 text-center text-white">
         <button
           onClick={() => navigate(-1)}
           aria-label="Kembali"
-          className="absolute left-5 top-3 h-9 w-9 rounded-full bg-white/90 text-brand-700 flex items-center justify-center"
+          className="absolute left-4 top-4 h-9 w-9 rounded-full bg-white/90 hover:bg-white text-emerald-700 flex items-center justify-center transition active:scale-95"
         >
           <ArrowLeft size={18} />
         </button>
         <img
           src="https://i.pravatar.cc/200?img=12"
           alt="Foto Profil"
-          className="h-28 w-28 rounded-full bg-gray-300 mx-auto mt-2 border-4 border-white shadow-md object-cover"
+          className="h-20 w-20 rounded-full bg-gray-300 mx-auto border-4 border-white/80 shadow-md object-cover"
         />
-        <p className="font-bold text-3xl mt-3">Adit Mustopo</p>
-        <p className="text-lg text-white/80">Warga Dusun Jarak Lor</p>
-        <button className="mt-3 bg-accent-500 text-sm font-semibold rounded-full px-8 py-2">
+        <p className="font-bold text-base mt-3">Adit Mustopo</p>
+        <p className="text-xs text-emerald-100">Warga Dusun Jarak Lor</p>
+        <button className="mt-3 bg-emerald-500 hover:bg-emerald-400 text-emerald-950 text-xs font-bold rounded-xl px-6 py-2 transition active:scale-95">
           Edit Profil
         </button>
       </div>
 
-      <div className="relative z-10 mx-4 -mt-[140px] bg-white rounded-3xl shadow-sm p-5">
+      <div className="bg-white rounded-2xl border border-emerald-100 shadow-sm p-4">
         {fields.map((f) => (
           <div key={f.label} className="mb-4 last:mb-0">
-            <p className="text-sm text-gray-500 mb-1.5">{f.label}</p>
-            <div className="border border-brand-600 rounded-xl px-3.5 py-2.5 text-sm">{f.value}</div>
+            <p className="text-xs font-semibold text-gray-700 mb-1">{f.label}</p>
+            <div className="bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-xs">{f.value}</div>
           </div>
         ))}
 
@@ -52,7 +52,7 @@ export default function Akun() {
             <Link
               key={label}
               to={to}
-              className={`rounded-2xl ${bg} flex flex-col items-center justify-center gap-2 py-5 text-xs font-semibold text-center`}
+              className={`rounded-2xl ${bg} flex flex-col items-center justify-center gap-2 py-4 text-xs font-bold text-center transition active:scale-95`}
             >
               <Icon size={22} />
               {label}
@@ -63,3 +63,4 @@ export default function Akun() {
     </div>
   );
 }
+

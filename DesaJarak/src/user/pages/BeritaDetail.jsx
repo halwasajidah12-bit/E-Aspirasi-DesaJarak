@@ -56,8 +56,8 @@ export default function BeritaDetail({ session }) {
   };
 
   return (
-    <div className="pb-8">
-      <div className="relative h-56 bg-gray-200">
+    <div className="px-4 sm:px-6 py-4 pb-8 space-y-3.5">
+      <div className="relative h-52 sm:h-72 rounded-2xl overflow-hidden bg-gray-200 shadow-sm">
         <img src={berita.image} alt={berita.judul} className="w-full h-full object-cover" />
         <button
           onClick={() => navigate(-1)}
@@ -66,14 +66,14 @@ export default function BeritaDetail({ session }) {
         >
           <ArrowLeft size={18} />
         </button>
-        <span className="absolute top-4 right-4 text-xs font-semibold rounded-full px-3 py-1 bg-brand-700 text-white">
+        <span className="absolute top-4 right-4 text-[10px] font-bold rounded-full px-2.5 py-1 bg-emerald-100 text-emerald-800 shadow-sm">
           {berita.kategori}
         </span>
       </div>
 
-      <div className="mx-4 -mt-6 bg-white rounded-3xl shadow-sm p-5">
-        <h1 className="text-lg font-bold text-gray-800 leading-snug">{berita.judul}</h1>
-        <div className="flex items-center gap-3 text-xs text-gray-500 mt-2">
+      <div className="bg-white rounded-2xl border border-emerald-100 shadow-sm p-4">
+        <h1 className="text-base font-bold text-gray-800 leading-snug">{berita.judul}</h1>
+        <div className="flex items-center gap-3 text-[10px] text-gray-400 font-medium mt-2">
           <span className="flex items-center gap-1">
             <Calendar size={13} /> {berita.tanggal}
           </span>
@@ -85,21 +85,21 @@ export default function BeritaDetail({ session }) {
         <p className="text-sm text-gray-600 leading-relaxed mt-4">{berita.konten}</p>
 
         <div className="mt-6">
-          <p className="text-sm font-semibold text-gray-700 mb-3">
+          <p className="text-sm font-bold text-emerald-900 mb-3">
             Komentar ({countNewsComments(berita.komentar)})
           </p>
           <div className="space-y-3">
             {berita.komentar.map((k, i) => (
-              <div key={k.id || i} className="bg-gray-50 rounded-2xl p-3">
+              <div key={k.id || i} className="bg-gray-50 rounded-xl p-2.5">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-semibold text-gray-800">{k.name}</span>
+                  <span className="text-xs font-bold text-gray-800">{k.name}</span>
                   <span className="text-xs text-gray-400">{k.time}</span>
                 </div>
-                <p className="text-sm text-gray-600 mt-1">{k.text}</p>
+                <p className="text-xs text-gray-600 mt-1">{k.text}</p>
                 {(k.replies || []).map((reply) => (
-                  <div key={reply.id} className="ml-3 mt-3 border-l-2 border-brand-200 pl-3">
+                  <div key={reply.id} className="ml-3 mt-3 border-l-2 border-emerald-200 pl-3">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-semibold text-gray-800">{reply.name}</span>
+                      <span className="text-xs font-bold text-gray-800">{reply.name}</span>
                       <span className="text-xs text-gray-400">{reply.time}</span>
                     </div>
                     {reply.quotedText && (
@@ -107,7 +107,7 @@ export default function BeritaDetail({ session }) {
                         {reply.quotedName}: {reply.quotedText}
                       </blockquote>
                     )}
-                    <p className="text-sm text-gray-600 mt-1">{reply.text}</p>
+                    <p className="text-xs text-gray-600 mt-1">{reply.text}</p>
                   </div>
                 ))}
               </div>
@@ -129,7 +129,7 @@ export default function BeritaDetail({ session }) {
             <button
               type="submit"
               aria-label="Kirim komentar"
-              className="h-10 w-10 rounded-full bg-brand-700 text-white flex items-center justify-center shrink-0"
+              className="h-10 w-10 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center shrink-0 shadow-sm transition active:scale-95"
             >
               <Send size={16} />
             </button>

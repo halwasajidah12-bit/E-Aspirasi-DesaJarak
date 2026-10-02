@@ -48,13 +48,13 @@ const laporan = [
 
 function InfoTable({ title, rows }) {
   return (
-    <div className="bg-white rounded-2xl shadow-sm p-5">
-      {title && <p className="font-semibold text-gray-800 mb-3">{title}</p>}
+    <div className="bg-white rounded-2xl border border-emerald-100 shadow-sm p-3.5">
+      {title && <p className="text-sm font-bold text-emerald-900 mb-2">{title}</p>}
       <div className="divide-y divide-gray-100">
         {rows.map(([label, value]) => (
-          <div key={label} className="flex items-center justify-between py-2.5 first:pt-0 last:pb-0">
-            <span className="text-sm text-brand-700">{label}</span>
-            <span className="text-sm font-medium text-gray-800">{value}</span>
+          <div key={label} className="flex items-center justify-between py-1.5 first:pt-0 last:pb-0">
+            <span className="text-xs text-gray-500">{label}</span>
+            <span className="text-xs font-semibold text-gray-800">{value}</span>
           </div>
         ))}
       </div>
@@ -111,9 +111,8 @@ export default function InfoDesa() {
   }, []);
 
   return (
-    <div className="pb-8">
-      
-      <div className="relative w-full h-60 sm:h-[400px] overflow-hidden">
+    <div className="px-4 sm:px-6 py-4 pb-8 space-y-3.5">
+      <div className="relative w-full h-52 sm:h-[360px] overflow-hidden rounded-2xl shadow-sm">
         {slides.map((src, i) => (
           <img
             key={i}
@@ -169,14 +168,14 @@ export default function InfoDesa() {
         </div>
       </div>
 
-      <div className="px-4 sm:px-6 pt-4">
-        <div className="bg-white rounded-full shadow-sm p-1 flex mb-4">
+      <div className="space-y-3.5">
+        <div className="bg-white rounded-xl border border-emerald-100 shadow-sm p-1 flex">
           {tabs.map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`flex-1 text-xs font-semibold rounded-full py-2 ${
-                tab === t ? "bg-brand-700 text-white" : "text-gray-500"
+              className={`flex-1 text-xs font-semibold rounded-lg py-2 transition ${
+                tab === t ? "bg-emerald-600 text-white shadow-sm" : "text-gray-600 hover:bg-emerald-50"
               }`}
             >
               {t}
@@ -185,7 +184,7 @@ export default function InfoDesa() {
         </div>
 
         {tab === "Informasi Desa" && (
-          <div className="space-y-4">
+          <div className="space-y-3.5">
             <InfoTable title="Data Kependudukan" rows={kependudukan} />
             <InfoTable title="Informasi Umum" rows={umum} />
           </div>

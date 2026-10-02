@@ -11,23 +11,24 @@ const items = [
 
 export default function BottomNav() {
   return (
-    <nav className="lg:hidden sticky bottom-0 left-0 right-0 bg-mint-50 border-t border-brand-100 px-4 py-2.5">
-      <ul className="flex items-center justify-between">
+    <nav className="lg:hidden sticky bottom-0 inset-x-0 bg-white border-t border-emerald-100 shadow-lg z-30 px-1 py-1 pb-safe">
+      <ul className="flex justify-between items-center">
         {items.map(({ to, icon: Icon, label }) => (
-          <li key={to}>
+          <li key={to} className="flex-1">
             <NavLink
               to={to}
               end={to === "/"}
               aria-label={label}
               className={({ isActive }) =>
-                `flex items-center justify-center h-10 w-10 rounded-full transition-colors ${
+                `flex flex-col items-center py-1.5 px-0.5 transition active:scale-95 ${
                   isActive
-                    ? "bg-brand-700 text-white"
-                    : "text-brand-700"
+                    ? "text-emerald-600 font-bold"
+                    : "text-gray-400 hover:text-emerald-600 font-medium"
                 }`
               }
             >
-              <Icon size={20} strokeWidth={2.3} />
+              <Icon size={18} strokeWidth={2.3} />
+              <span className="text-[9px] xs:text-[10px] mt-0.5 truncate max-w-full">{label}</span>
             </NavLink>
           </li>
         ))}

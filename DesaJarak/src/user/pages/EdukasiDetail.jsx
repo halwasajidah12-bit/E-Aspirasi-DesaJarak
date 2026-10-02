@@ -44,8 +44,8 @@ export default function EdukasiDetail() {
     <div className="pb-8">
       <PageHeader title={data.title} subtitle={data.subtitle} />
 
-      <div className="px-4 sm:px-6 -mt-[140px] space-y-5">
-        {data.image && <img src={data.image} alt={data.title} className="w-full max-h-72 rounded-2xl object-cover" />}
+      <div className="px-4 sm:px-6 mt-3.5 space-y-3.5">
+        {data.image && <img src={data.image} alt={data.title} className="w-full max-h-72 rounded-2xl object-cover border border-emerald-100 shadow-sm" />}
         {data.content ? (
           <section className="space-y-3">
             {data.content.split(/\n\s*\n/).filter(Boolean).map((block, index) => {
@@ -53,16 +53,16 @@ export default function EdukasiDetail() {
               if (lines.every((line) => line.startsWith("- "))) {
                 return <ul key={index} className="space-y-2 list-disc pl-5 text-sm text-gray-700">{lines.map((line, lineIndex) => <li key={lineIndex}>{line.slice(2)}</li>)}</ul>;
               }
-              if (block.startsWith("## ")) return <h2 key={index} className="font-bold text-gray-900">{block.slice(3)}</h2>;
+              if (block.startsWith("## ")) return <h2 key={index} className="text-sm font-bold text-emerald-900">{block.slice(3)}</h2>;
               return <p key={index} className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">{block}</p>;
             })}
           </section>
         ) : data.sections?.map((s, si) => (
           <section key={si}>
-            <h2 className="font-bold text-black mb-2">{s.heading}</h2>
+            <h2 className="text-sm font-bold text-emerald-900 mb-2">{s.heading}</h2>
 
             {s.paragraphs?.map((p, i) => (
-              <p key={i} className="text-sm text-black-500 leading-relaxed mb-2">
+              <p key={i} className="text-sm text-gray-600 leading-relaxed mb-2">
                 {p}
               </p>
             ))}
@@ -70,14 +70,14 @@ export default function EdukasiDetail() {
             {s.twoCol && (
               <div className="grid sm:grid-cols-2 gap-3 mt-2">
                 {s.twoCol.map((c, i) => (
-                  <div key={i} className="border border-brand-200 rounded-2xl p-4">
+                  <div key={i} className="bg-white border border-emerald-100 shadow-sm rounded-2xl p-3.5">
                     <div className="flex items-center gap-2 mb-1.5">
-                      <span className="h-8 w-8 rounded-full bg-brand-100 text-black-700 flex items-center justify-center shrink-0">
+                      <span className="h-8 w-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
                         {(() => { const Icon = c.icon || Users; return <Icon size={16} /> })()}
                       </span>
-                      <span className="font-semibold text-sm text-black-800">{c.title}</span>
+                      <span className="font-bold text-xs text-gray-800">{c.title}</span>
                     </div>
-                    <p className="text-xs text-black-500 leading-relaxed">{c.desc}</p>
+                    <p className="text-xs text-gray-600 leading-relaxed">{c.desc}</p>
                   </div>
                 ))}
               </div>
@@ -86,7 +86,7 @@ export default function EdukasiDetail() {
             {s.bullets && (
               <ul className="space-y-2 mt-2">
                 {s.bullets.map((b, i) => (
-                  <li key={i} className="flex items-start gap-2 text-sm text-black-700">
+                  <li key={i} className="flex items-start gap-2 text-sm text-gray-700">
                     <CheckCircle2 size={16} className="text-brand-700 mt-0.5 shrink-0" />
                     {b}
                   </li>
@@ -97,14 +97,14 @@ export default function EdukasiDetail() {
             {s.steps && (
               <div className="grid sm:grid-cols-2 gap-3 mt-2">
                 {s.steps.map((st, i) => (
-                  <div key={i} className="border border-brand-100 rounded-2xl p-3">
+                  <div key={i} className="bg-white border border-emerald-100 shadow-sm rounded-2xl p-3">
                     <div className="flex items-center gap-2 mb-1.5">
-                      <span className="font-semibold text-sm text-black-800">{st.title}</span>
+                      <span className="font-bold text-xs text-gray-800">{st.title}</span>
                       <span className="h-5 w-5 rounded-full bg-brand-700 text-white text-xs flex items-center justify-center shrink-0">
                         {st.badge ?? i + 1}
                       </span>
                     </div>
-                    <p className="text-xs text-black-500 leading-relaxed">{st.desc}</p>
+                    <p className="text-xs text-gray-600 leading-relaxed">{st.desc}</p>
                   </div>
                 ))}
               </div>
@@ -114,11 +114,11 @@ export default function EdukasiDetail() {
               <div className="grid grid-cols-3 gap-3 mt-2">
                 {s.priorities.map((p, i) => (
                   <div key={i} className="flex flex-col items-center text-center gap-1.5">
-                    <span className="h-12 w-12 rounded-2xl bg-brand-700 text-white flex items-center justify-center">
+                    <span className="h-12 w-12 rounded-2xl bg-emerald-600 text-white shadow-sm flex items-center justify-center">
                       {(() => { const Icon = p.icon || priorityIcons[p.title] || FileCheck; return <Icon size={22} /> })()}
                     </span>
-                    <p className="text-sm font-semibold text-black-800">{p.title}</p>
-                    <p className="text-xs text-black-500 leading-snug">{p.desc}</p>
+                    <p className="text-xs font-bold text-gray-800">{p.title}</p>
+                    <p className="text-xs text-gray-600 leading-snug">{p.desc}</p>
                   </div>
                 ))}
               </div>
@@ -130,8 +130,8 @@ export default function EdukasiDetail() {
                   <div key={i} className="flex items-start gap-2">
                     <CheckCircle2 size={16} className="text-brand-700 mt-0.5 shrink-0" />
                     <div>
-                      <p className="text-sm font-semibold text-black-800">{c.title}</p>
-                      <p className="text-xs text-black-500 leading-relaxed mt-0.5">{c.desc}</p>
+                      <p className="text-xs font-bold text-gray-800">{c.title}</p>
+                      <p className="text-xs text-gray-600 leading-relaxed mt-0.5">{c.desc}</p>
                     </div>
                   </div>
                 ))}
@@ -150,12 +150,12 @@ export default function EdukasiDetail() {
             )}
 
             {s.tips && (
-              <div className="bg-brand-700 rounded-2xl p-4 mt-2">
+              <div className="bg-gradient-to-r from-emerald-800 to-emerald-700 rounded-2xl p-4 mt-2 shadow-sm">
                 <p className="font-semibold text-white mb-2">Tips</p>
                 <ul className="space-y-2">
                   {s.tips.map((t, i) => (
                     <li key={i} className="flex items-start gap-2 text-sm text-white/90">
-                      <Star size={14} className="text-accent-500 mt-0.5 shrink-0" fill="currentColor" />
+                      <Star size={14} className="text-amber-400 mt-0.5 shrink-0" fill="currentColor" />
                       {t}
                     </li>
                   ))}
