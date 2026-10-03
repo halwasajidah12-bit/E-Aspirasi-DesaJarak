@@ -5,6 +5,7 @@ import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
 import pg from "pg";
+import { GoogleGenAI } from "@google/genai";
 
 import {
   initialProfilDesa,
@@ -16,6 +17,14 @@ import { beritaData } from "./src/user/data/berita.js";
 import { edukasiList } from "./src/user/data/edukasi.js";
 import { laporanData } from "./src/user/data/laporan.js";
 import { profilDesa } from "./src/user/data/profilDesa.js";
+
+const { Pool } = pg;
+const root = fileURLToPath(new URL(".", import.meta.url));
+const port = Number(process.env.PORT || 4173);
+
+const ai = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY,
+});
 
 // Helper memuat variabel lingkungan dari file .env lokal jika ada
 const loadEnv = () => {
@@ -462,9 +471,7 @@ const initDatabase = async () => {
 };
 
 const handleApi = async (request, response, pathname) => {
-  if (request.method === "GET" && pathname === "/api/health") {
-    return sendJson(response, 200, { ok: true });
-  }
+
 
   if (request.method === "GET" && pathname === "/api/notifications") {
     const result = await pool.query(
@@ -1055,6 +1062,7 @@ const server = http.createServer(async (request, response) => {
 });
 
 initDatabase()
+
   .then(() =>
     server.listen(port, "0.0.0.0", () => {
       console.log(`Berhasil terhubung ke database PostgreSQL!`);
