@@ -1,11 +1,12 @@
 import { createReadStream, readFileSync, existsSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, mkdir } from "node:fs/promises";
 import { createHash, randomBytes, scryptSync } from "node:crypto";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
 import pg from "pg";
 import { GoogleGenAI } from "@google/genai";
+import multer from "multer";
 
 import {
   initialProfilDesa,
@@ -18,9 +19,25 @@ import { edukasiList } from "./src/user/data/edukasi.js";
 import { laporanData } from "./src/user/data/laporan.js";
 import { profilDesa } from "./src/user/data/profilDesa.js";
 
-const { Pool } = pg;
 const root = fileURLToPath(new URL(".", import.meta.url));
 const port = Number(process.env.PORT || 4173);
+const { Pool } = pg;
+
+// Konfigurasi Multer untuk Upload File
+const uploadDir = join(root, "uploads");
+// Pastikan folder uploads tersedia
+mkdir(uploadDir, { recursive: true }).catch(console.error);
+
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, uniqueSuffix + extname(file.originalname));
+  },
+});
+const upload = multer({ storage: storage });
 
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
@@ -28,7 +45,7 @@ const ai = new GoogleGenAI({
 
 // Helper memuat variabel lingkungan dari file .env lokal jika ada
 const loadEnv = () => {
-  const envPaths = [join(process.cwd(), ".env"), fileURLToPath(new URL(".env", import.meta.url))];
+  const envPaths = [join(process.cwd(), ".env"), join(root, ".env")];
   for (const envPath of envPaths) {
     if (existsSync(envPath)) {
       const content = readFileSync(envPath, "utf-8");
@@ -48,12 +65,7 @@ const loadEnv = () => {
 };
 loadEnv();
 
-const { Pool } = pg;
-const root = fileURLToPath(new URL(".", import.meta.url));
-const port = Number(process.env.PORT || 4173);
-
 // Inisialisasi pool database dengan dukungan DATABASE_URL dan SSL otomatis
-// [DARI FILE PERTAMA] - Mendukung DATABASE_URL, localhost detection, dan PG* vars
 const pool = process.env.DATABASE_URL
   ? new Pool({
       connectionString: process.env.DATABASE_URL,
@@ -324,14 +336,11 @@ const mutateReports = async (mutator) => {
 };
 
 const initDatabase = async () => {
-  // ==================== DARI FILE KEDUA: Migrasi awal sebelum CREATE TABLE ====================
-  // Memastikan kolom tabel komentar fleksibel sebelum tabel dibuat/dimodifikasi
   try {
     await pool.query(`ALTER TABLE komentar ALTER COLUMN aspirasi_id TYPE TEXT;`);
     await pool.query(`ALTER TABLE komentar ALTER COLUMN user_id TYPE TEXT;`);
   } catch (e) {}
 
-  // 1. Buat tabel bawaan & tabel komentar relasional jika belum ada
   await pool.query(`
     CREATE TABLE IF NOT EXISTS app_data (
       data_key TEXT PRIMARY KEY,
@@ -366,7 +375,6 @@ const initDatabase = async () => {
     );
   `);
 
-  // 2. Sinkronkan kolom tabel users agar kompatibel dengan server.mjs dan server1.mjs
   try {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS nama TEXT;`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;`);
@@ -376,15 +384,12 @@ const initDatabase = async () => {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS no_telepon TEXT;`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS alamat TEXT;`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS foto TEXT;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS nik TEXT;`);
 
-    // Pastikan tipe kolom tabel komentar bersifat fleksibel (TEXT)
     await pool.query(`ALTER TABLE komentar ALTER COLUMN aspirasi_id TYPE TEXT;`);
     await pool.query(`ALTER TABLE komentar ALTER COLUMN user_id TYPE TEXT;`);
-  } catch (err) {
-    // Abaikan jika kolom sudah sesuai
-  }
+  } catch (err) {}
 
-  // 3. Seed data dasar
   for (const [key, value] of Object.entries(seedData)) {
     await pool.query(
       "INSERT INTO app_data (data_key, data_value) VALUES ($1, $2) ON CONFLICT (data_key) DO NOTHING",
@@ -454,25 +459,30 @@ const initDatabase = async () => {
     "userBerita",
   ]);
 
-  // Seed user default (mengisi format username terenkripsi dan format plain/email)
   for (const [username, fullname, rawPassword, role] of [
     ["admin", "Admin Desa", process.env.ADMIN_PASSWORD || "admin", "admin"],
     ["warga", "Warga Desa", "warga", "warga"],
   ]) {
     const credentials = hashPassword(rawPassword);
     const email = `${username}@desa.id`;
-   await pool.query(
-  `INSERT INTO users (username, fullname, password_hash, password_salt, nama, email, password, role, poin)
-   VALUES ($1, $2, $3, $4, $2, $5, $6, $7, 0)
-   ON CONFLICT (username) DO NOTHING`,
-  [username, fullname, credentials.hash, credentials.salt, email, rawPassword, role],
-  ); 
+    
+    // PERBAIKAN ERROR CRASH SEEDING: Cek keberadaan email dan username sebelum melakukan insert
+    try {
+      const existingUser = await pool.query("SELECT id FROM users WHERE username = $1 OR email = $2", [username, email]);
+      if (existingUser.rows.length === 0) {
+        await pool.query(
+          `INSERT INTO users (username, fullname, password_hash, password_salt, nama, email, password, role, poin)
+           VALUES ($1, $2, $3, $4, $2, $5, $6, $7, 0)`,
+          [username, fullname, credentials.hash, credentials.salt, email, rawPassword, role],
+        ); 
+      }
+    } catch (err) {
+      console.error(`Gagal menyuntikkan user ${username}:`, err.message);
+    }
   }
 };
 
 const handleApi = async (request, response, pathname) => {
-
-
   if (request.method === "GET" && pathname === "/api/notifications") {
     const result = await pool.query(
       "SELECT id, title, description, icon, color, action, created_at, read_at FROM notifications ORDER BY created_at DESC LIMIT 100",
@@ -627,7 +637,6 @@ const handleApi = async (request, response, pathname) => {
     });
 
     if (updated) {
-      // Menyimpan riwayat komentar ke tabel relasional 'komentar'
       try {
         await pool.query(
           "INSERT INTO komentar (aspirasi_id, user_id, isi_komentar) VALUES ($1, $2, $3)",
@@ -864,7 +873,6 @@ const handleApi = async (request, response, pathname) => {
     });
 
     if (updated) {
-      // Simpan juga ke tabel 'komentar'
       try {
         await pool.query(
           "INSERT INTO komentar (aspirasi_id, user_id, isi_komentar) VALUES ($1, $2, $3)",
@@ -913,7 +921,6 @@ const handleApi = async (request, response, pathname) => {
     return sendJson(response, 200, { ok: true, key, value });
   }
 
-  // ====================== AUTHENTICATION & PROFIL ======================
   if (request.method === "POST" && (pathname === "/api/auth/login" || pathname === "/api/auth/register")) {
     const body = await readJson(request);
     const identifier = String(body.username || body.email || "").trim();
@@ -953,7 +960,6 @@ const handleApi = async (request, response, pathname) => {
       }
     }
 
-    // Login: Mendukung login via username maupun email, serta password terenkripsi atau plain
     const result = await pool.query(
       `SELECT * FROM users 
        WHERE username = $1 OR email = $1 OR nama = $1 OR username = $2`,
@@ -986,37 +992,98 @@ const handleApi = async (request, response, pathname) => {
     });
   }
 
-  // API Update Profil PostgreSQL
-  if (request.method === "PUT" && pathname === "/api/user/profile") {
-    const body = await readJson(request);
-    const { id, nama, no_telepon, alamat, foto } = body;
-    if (!id) return sendJson(response, 400, { error: "ID User wajib disertakan" });
-
+  // --- API GET PROFIL USER ---
+  if (request.method === "GET" && /^\/api\/users\/[^/]+$/.test(pathname)) {
+    const id = decodeURIComponent(pathname.slice("/api/users/".length));
     try {
       const result = await pool.query(
-        `UPDATE users 
-         SET nama = COALESCE($1, nama),
-             fullname = COALESCE($1, fullname),
-             no_telepon = COALESCE($2, no_telepon),
-             alamat = COALESCE($3, alamat),
-             foto = COALESCE($4, foto)
-         WHERE id = $5
-         RETURNING *`,
-        [nama, no_telepon, alamat, foto, id],
+        "SELECT id, username, fullname, nama, email, no_telepon, alamat, foto, nik FROM users WHERE username = $1 OR email = $1",
+        [id]
       );
-
-      if (result.rows.length === 0) return sendJson(response, 404, { error: "User tidak ditemukan" });
-      return sendJson(response, 200, { success: true, user: result.rows[0] });
-    } catch (err) {
-      console.error("Error saat update profil:", err.message);
-      return sendJson(response, 500, { error: "Gagal memperbarui profil di database" });
+      if (result.rows.length === 0) {
+        return sendJson(response, 404, { message: "User tidak ditemukan" });
+      }
+      return sendJson(response, 200, result.rows[0]);
+    } catch (error) {
+      console.error(error);
+      return sendJson(response, 500, { message: "Kesalahan server saat memuat profil." });
     }
+  }
+
+  // --- API UPDATE PROFIL USER (SUDAH FIX 100% UNTUK NIK) ---
+  if (request.method === "PUT" && /^\/api\/users\/[^/]+$/.test(pathname)) {
+    const id = decodeURIComponent(pathname.slice("/api/users/".length));
+    
+    return new Promise((resolve, reject) => {
+      upload.single("foto")(request, response, async (err) => {
+        if (err) {
+          console.error("Multer error:", err);
+          sendJson(response, 400, { message: "Gagal mengunggah foto." });
+          return resolve();
+        }
+
+        try {
+          const { fullname, no_telepon, alamat, nik } = request.body;
+          let fotoFilename = null;
+          
+          if (request.file) {
+            fotoFilename = request.file.filename;
+          }
+
+          let query = "UPDATE users SET fullname = $1, nama = $1, no_telepon = $2, alamat = $3, nik = $4";
+          let values = [fullname || '', no_telepon || '', alamat || '', nik || ''];
+          let paramIndex = 5;
+
+          if (fotoFilename) {
+            query += `, foto = $${paramIndex}`;
+            values.push(fotoFilename);
+            paramIndex++;
+          }
+
+          query += ` WHERE username = $${paramIndex} OR email = $${paramIndex} RETURNING id, username, fullname, no_telepon, alamat, foto, nik`;
+          values.push(id);
+
+          const result = await pool.query(query, values);
+
+          if (result.rows.length === 0) {
+            sendJson(response, 404, { message: "User tidak ditemukan" });
+          } else {
+            sendJson(response, 200, result.rows[0]);
+          }
+        } catch (error) {
+          console.error("Database error during profile update:", error);
+          sendJson(response, 500, { message: "Gagal memperbarui profil di database." });
+        }
+        resolve();
+      });
+    });
   }
 
   return sendJson(response, 404, { message: "Endpoint tidak ditemukan." });
 };
 
 const serveStatic = async (response, pathname) => {
+  if (pathname.startsWith("/uploads/")) {
+    const filePath = normalize(join(root, pathname));
+    try {
+      const fileStat = await stat(filePath);
+      if (!fileStat.isFile()) throw new Error("not-file");
+      
+      const mime = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif"
+      }[extname(filePath).toLowerCase()] || "application/octet-stream";
+
+      response.writeHead(200, { "Content-Type": mime });
+      return createReadStream(filePath).pipe(response);
+    } catch (e) {
+      response.writeHead(404, { "Content-Type": "text/plain" });
+      return response.end("File tidak ditemukan.");
+    }
+  }
+
   const requested = pathname === "/" ? "/index.html" : pathname;
   const filePath = normalize(join(root, "dist", requested));
 
@@ -1057,12 +1124,13 @@ const server = http.createServer(async (request, response) => {
     else await serveStatic(response, pathname);
   } catch (error) {
     console.error(error);
-    sendJson(response, 500, { message: "Kesalahan server." });
+    if (!response.headersSent) {
+      sendJson(response, 500, { message: "Kesalahan server." });
+    }
   }
 });
 
 initDatabase()
-
   .then(() =>
     server.listen(port, "0.0.0.0", () => {
       console.log(`Berhasil terhubung ke database PostgreSQL!`);

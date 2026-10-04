@@ -22,13 +22,11 @@ import DetailReward from "./pages/DetailReward";
 import Pengaturan from "./pages/Pengaturan";
 import AiAsisten from "./pages/AiAsisten";
 
-
 export default function App({ session, onLogout }) {
   const [sidebarOpen, setSidebarOpen] = useState(false); 
   const [collapsed, setCollapsed] = useState(false); 
   const { pathname } = useLocation();
   const isChatPage = pathname === "/ai-asisten";
-
 
   const handleMenuClick = () => {
     if (typeof window !== "undefined" && window.innerWidth >= 1024) {
@@ -45,6 +43,7 @@ export default function App({ session, onLogout }) {
         onClose={() => setSidebarOpen(false)}
         collapsed={collapsed}
         onToggleCollapse={() => setCollapsed((c) => !c)}
+        session={session} 
       />
 
       <div
@@ -68,7 +67,7 @@ export default function App({ session, onLogout }) {
             <Route path="/berita/:id" element={<BeritaDetail session={session} />} />
             <Route path="/info-desa" element={<InfoDesa />} />
             <Route path="/riwayat" element={<Riwayat session={session} />} />
-            <Route path="/akun" element={<Akun />} />
+            <Route path="/akun" element={<Akun session={session} />} /> 
             <Route path="/edukasi" element={<Edukasi />} />
             <Route path="/edukasi/:slug" element={<EdukasiDetail />} />
             <Route path="/reward" element={<DetailReward />} />

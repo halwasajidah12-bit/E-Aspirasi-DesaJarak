@@ -8,12 +8,12 @@
     "build": "vite build",
     "preview": "vite preview",
     "start": "node --env-file=.env server.mjs"
-
   },
   "dependencies": {
     "@fortawesome/fontawesome-free": "^7.3.1",
     "@google/genai": "^2.27.0",
     "lucide-react": "^1.47.0",
+    "multer": "^2.4.0",
     "pg": "^8.13.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

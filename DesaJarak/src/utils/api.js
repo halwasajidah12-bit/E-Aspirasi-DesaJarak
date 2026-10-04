@@ -84,3 +84,17 @@ export const createReport = (report, owner) => jsonRequest('/reports', {
   method: 'POST',
   body: JSON.stringify({ ...report, ...owner }),
 })
+
+export const getUserProfile = (id) => jsonRequest(`/users/${encodeURIComponent(id)}`)
+
+export const updateUserProfile = async (id, formData) => {
+  const response = await fetch(`/api/users/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    // perhtaikan cuy ini Tidak memakai headers Content-Type karena browser akan otomatis 
+    // mengatur 'multipart/form-data' beserta 'boundary'-nya dari objek FormData
+    body: formData,
+  })
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(body.message || 'Gagal menyimpan profil.')
+  return body
+}

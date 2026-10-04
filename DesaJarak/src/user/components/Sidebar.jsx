@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { NavLink } from "react-router-dom";
 import {
   X,
@@ -16,6 +17,7 @@ import {
   ChevronRight,
   Landmark,
 } from "lucide-react";
+import { getUserProfile } from "../../utils/api";
 
 const utama = [
   { to: "/", icon: Home, label: "Beranda" },
@@ -70,10 +72,43 @@ function Section({ title, links, onNavigate, collapsed }) {
   );
 }
 
-export default function Sidebar({ open, onClose, collapsed, onToggleCollapse }) {
+export default function Sidebar({ open, onClose, collapsed, onToggleCollapse, session }) {
+  const [userData, setUserData] = useState({
+    name: session?.name || "Warga Desa",
+    foto: null
+  });
+
+  // 1. Tarik data profil dari database HANYA pada saat ID pengguna berubah/aplikasi dimuat
+  useEffect(() => {
+    if (session?.userId && session.role !== 'guest') {
+      getUserProfile(session.userId)
+        .then((data) => {
+          setUserData(prev => ({
+            ...prev,
+            name: data.fullname || session.name || "Warga Desa",
+            foto: data.foto ? `/uploads/${data.foto}` : prev.foto
+          }));
+        })
+        .catch(() => {});
+    }
+  }, [session?.userId]);
+
+  // 2. Telinga "Sinyal Real-Time" yang dipisah agar tidak terganggu dan selalu aktif
+  useEffect(() => {
+    const handleProfileUpdate = (e) => {
+      setUserData(prev => ({
+        ...prev,
+        name: e.detail.fullname, // Otomatis menerima nama baru
+        foto: e.detail.previewUrl || (e.detail.foto ? `/uploads/${e.detail.foto}` : prev.foto)
+      }));
+    };
+
+    window.addEventListener('profileUpdated', handleProfileUpdate);
+    return () => window.removeEventListener('profileUpdated', handleProfileUpdate);
+  }, []);
+
   return (
     <>
-      {/* backdrop — only relevant below the lg breakpoint, where the sidebar is a drawer */}
       <div
         className={`fixed inset-0 bg-black/40 z-40 transition-opacity lg:hidden ${
           open ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
@@ -104,7 +139,6 @@ export default function Sidebar({ open, onClose, collapsed, onToggleCollapse }) 
           </button>
         </div>
 
-        {/* collapse/expand toggle — desktop only */}
         <button
           onClick={onToggleCollapse}
           aria-label={collapsed ? "Perluas menu" : "Ciutkan menu"}
@@ -121,17 +155,21 @@ export default function Sidebar({ open, onClose, collapsed, onToggleCollapse }) 
         <NavLink
           to="/akun"
           onClick={onClose}
-          title="Budi Santoso"
+          title={userData.name}
           className={`m-3 flex items-center gap-3 rounded-xl bg-emerald-50 border border-emerald-100 px-3 py-2.5 overflow-hidden ${
             collapsed ? "lg:justify-center lg:px-0 lg:mx-2" : ""
           }`}
         >
-          <div className="h-9 w-9 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0">
-            <User size={16} fill="currentColor" />
+          <div className="h-9 w-9 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0 border border-emerald-200 overflow-hidden">
+            {userData.foto ? (
+              <img src={userData.foto} alt="Avatar" className="w-full h-full object-cover" />
+            ) : (
+              <User size={16} fill="currentColor" />
+            )}
           </div>
           <div className={`whitespace-nowrap ${collapsed ? "lg:hidden" : ""}`}>
-            <p className="text-sm font-semibold text-gray-800">Budi Santoso</p>
-            <p className="text-xs text-emerald-600">Pengguna Terverifikasi</p>
+            <p className="text-sm font-semibold text-gray-800">{userData.name}</p>
+            <p className="text-xs text-emerald-600">{session?.role === 'admin' ? "Administrator" : "Pengguna Terverifikasi"}</p>
           </div>
         </NavLink>
       </aside>
