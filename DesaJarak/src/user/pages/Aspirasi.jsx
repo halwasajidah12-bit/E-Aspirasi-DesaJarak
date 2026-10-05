@@ -1,10 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, ScanLine, Camera } from "lucide-react";
-import { createReport } from "../../utils/api.js";
+import { createReport, getCategories } from "../../utils/api.js";
 
 const steps = ["Lokasi", "Detail", "Foto"];
-const kategoriList = ["Jalan", "Jembatan", "Listrik", "Air", "Drainase", "Lainya"];
 
 function Stepper({ current }) {
   return (
@@ -32,6 +31,7 @@ function Stepper({ current }) {
 
 export default function Aspirasi({ session }) {
   const [step, setStep] = useState(0);
+  const [dbCategories, setDbCategories] = useState([]);
   const [form, setForm] = useState({
     lokasi: "",
     rt: "",
@@ -44,6 +44,25 @@ export default function Aspirasi({ session }) {
   });
   const navigate = useNavigate();
   const [submitting, setSubmitting] = useState(false);
+
+  // Tarik data kategori dinamis dari database saat form dibuka
+  useEffect(() => {
+    let mounted = true;
+    getCategories()
+      .then((items) => {
+        if (mounted) {
+          // Ambil hanya nama_kategori
+          setDbCategories(items.map(item => item.nama_kategori));
+        }
+      })
+      .catch(() => {
+        if (mounted) {
+          // Fallback jika API gagal
+          setDbCategories(["Jalan", "Jembatan", "Listrik", "Air", "Drainase", "Lainya"]);
+        }
+      });
+    return () => (mounted = false);
+  }, []);
 
   const update = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
 
@@ -139,8 +158,9 @@ export default function Aspirasi({ session }) {
             <p className="text-xs font-semibold text-gray-700 mt-4 mb-1">
               <span className="text-rose-500">*</span>Kategori
             </p>
+            {/* Tombol Kategori Dinamis dari Database */}
             <div className="grid grid-cols-3 gap-2">
-              {kategoriList.map((k) => (
+              {dbCategories.map((k) => (
                 <button
                   key={k}
                   type="button"
@@ -224,4 +244,4 @@ function Field({ label, required, children, className = "" }) {
       <div className="mt-1">{children}</div>
     </label>
   );
-}
+} 

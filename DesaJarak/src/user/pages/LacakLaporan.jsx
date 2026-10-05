@@ -3,19 +3,29 @@ import { Link } from "react-router-dom";
 import { Search, Plus, Filter } from "lucide-react";
 import PageHeader from "../components/PageHeader";
 import ReportCard from "../components/ReportCard";
-import { kategoriList, mapApiReport } from "../data/laporan";
-import { getReports } from "../../utils/api.js";
+import { mapApiReport } from "../data/laporan";
+import { getReports, getCategories } from "../../utils/api.js";
 
 const statusFilters = ["Semua", "Masuk", "Diproses", "Selesai", "Ditolak"];
 
 export default function LacakLaporan() {
   const [laporanData, setLaporanData] = useState([]);
+  const [dbCategories, setDbCategories] = useState([]);
   const [status, setStatus] = useState("Semua");
   const [kategori, setKategori] = useState("Semua");
   const [query, setQuery] = useState("");
 
   useEffect(() => {
     let mounted = true;
+    
+    // Tarik Kategori dari API/Database
+    getCategories()
+      .then((items) => {
+        if (mounted) setDbCategories(items.map(item => item.nama_kategori));
+      })
+      .catch(() => {});
+
+    // Tarik Laporan
     const refreshReports = () => {
       getReports()
         .then((items) => {
@@ -23,15 +33,18 @@ export default function LacakLaporan() {
         })
         .catch(() => {});
     };
+    
     refreshReports();
     const interval = setInterval(refreshReports, 3000);
+    
     return () => {
       mounted = false;
       clearInterval(interval);
     };
   }, []);
 
-  const kategoriFilters = ["Semua", ...new Set([...kategoriList, ...laporanData.map((item) => item.kategori)])];
+  // Filter gabungan dinamis: Ambil dari Master Database + Ambil unik dari laporan yg sudah ada
+  const kategoriFilters = ["Semua", ...new Set([...dbCategories, ...laporanData.map((item) => item.kategori)])];
 
   const filtered = laporanData.filter((l) => {
     const q = query.toLowerCase();
