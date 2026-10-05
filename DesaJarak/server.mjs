@@ -373,6 +373,12 @@ const initDatabase = async () => {
       isi_komentar TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS kategori_infrastruktur (
+      id BIGSERIAL PRIMARY KEY,
+      nama_kategori TEXT NOT NULL,
+      deskripsi TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
   `);
 
   try {
@@ -483,6 +489,55 @@ const initDatabase = async () => {
 };
 
 const handleApi = async (request, response, pathname) => {
+  // --- API GET DAFTAR KATEGORI INFRASTRUKTUR ---
+  if (request.method === "GET" && pathname === "/api/categories") {
+    try {
+      const result = await pool.query("SELECT id, nama_kategori FROM kategori_infrastruktur ORDER BY id ASC");
+      if (result.rows.length === 0) {
+        const defaultCategories = ["Jalan & Fasilitas", "Penerangan", "Lingkungan", "Lainnya"];
+        return sendJson(response, 200, defaultCategories.map((name, index) => ({
+          id: index + 1,
+          nama_kategori: name
+        })));
+      }
+      return sendJson(response, 200, result.rows);
+    } catch (error) {
+      console.error("Database error during fetching categories:", error);
+      return sendJson(response, 500, { message: "Gagal memuat kategori." });
+    }
+  }
+
+  // --- API POST TAMBAH KATEGORI ---
+  if (request.method === "POST" && pathname === "/api/categories") {
+    const body = await readJson(request);
+   
+    if (!body.nama_kategori) return sendJson(response, 400, { message: "Nama kategori wajib diisi" });
+    try {
+      // Menyisipkan "-" ke kolom deskripsi untuk menghindari error NOT NULL
+      const result = await pool.query(
+        "INSERT INTO kategori_infrastruktur (nama_kategori, deskripsi) VALUES ($1, $2) RETURNING *",
+        [body.nama_kategori, "-"]
+      );
+
+      return sendJson(response, 201, result.rows[0]);
+    } catch (error) {
+      console.error("==> ERROR DATABASE SIMPAN KATEGORI:", error);
+      return sendJson(response, 500, { message: "Database Error: " + error.message });
+    }
+  }
+
+  // --- API DELETE KATEGORI ---
+  if (request.method === "DELETE" && pathname.startsWith("/api/categories/")) {
+    const id = pathname.split("/").pop();
+    try {
+      await pool.query("DELETE FROM kategori_infrastruktur WHERE id = $1", [id]);
+      return sendJson(response, 200, { message: "Kategori terhapus" });
+    } catch (error) {
+      console.error(error);
+      return sendJson(response, 500, { message: "Gagal menghapus kategori" });
+    }
+  }
+
   if (request.method === "GET" && pathname === "/api/notifications") {
     const result = await pool.query(
       "SELECT id, title, description, icon, color, action, created_at, read_at FROM notifications ORDER BY created_at DESC LIMIT 100",
@@ -992,7 +1047,6 @@ const handleApi = async (request, response, pathname) => {
     });
   }
 
-  // --- API GET PROFIL USER ---
   if (request.method === "GET" && /^\/api\/users\/[^/]+$/.test(pathname)) {
     const id = decodeURIComponent(pathname.slice("/api/users/".length));
     try {
@@ -1010,7 +1064,7 @@ const handleApi = async (request, response, pathname) => {
     }
   }
 
-  // --- API UPDATE PROFIL USER (SUDAH FIX 100% UNTUK NIK) ---
+
   if (request.method === "PUT" && /^\/api\/users\/[^/]+$/.test(pathname)) {
     const id = decodeURIComponent(pathname.slice("/api/users/".length));
     

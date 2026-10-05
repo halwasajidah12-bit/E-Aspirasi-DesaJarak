@@ -98,3 +98,8 @@ export const updateUserProfile = async (id, formData) => {
   if (!response.ok) throw new Error(body.message || 'Gagal menyimpan profil.')
   return body
 }
+export const getCategories = async () => {
+  const res = await fetch("/api/categories");
+  if (!res.ok) throw new Error("Failed to fetch categories");
+  return await res.json();
+};
