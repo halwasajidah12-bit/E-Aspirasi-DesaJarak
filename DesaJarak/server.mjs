@@ -42,8 +42,46 @@ const upload = multer({ storage: storage });
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
 });
+const classifyReportWithGemini = async (description) => {
+  try {
+    const result = await ai.models.generateContent({
+      model: 'gemini-3.5-flash-lite',
+      contents: `
+Klasifikasikan laporan masyarakat berikut ke dalam tepat satu kategori:
 
-// Helper memuat variabel lingkungan dari file .env lokal jika ada
+- Jalan
+- Drainase
+- Penerangan
+- Jembatan
+- Fasilitas Umum
+
+Deskripsi laporan:
+"${description}"
+
+Balas HANYA dengan nama kategorinya.
+`,
+    })
+
+    const category = result.text.trim()
+
+    const allowedCategories = [
+      "Jalan",
+      "Drainase",
+      "Penerangan",
+      "Jembatan",
+      "Fasilitas Umum",
+    ]
+
+    return allowedCategories.includes(category)
+      ? category
+      : null
+
+  } catch (error) {
+    console.error("Gemini classification gagal:", error)
+    return null
+  }
+}
+
 const loadEnv = () => {
   const envPaths = [join(process.cwd(), ".env"), join(root, ".env")];
   for (const envPath of envPaths) {
@@ -65,6 +103,10 @@ const loadEnv = () => {
 };
 loadEnv();
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> 1d17c45 (feat: add Gemini report classification)
 // Inisialisasi pool database dengan dukungan DATABASE_URL dan SSL otomatis
 const pool = process.env.DATABASE_URL
   ? new Pool({
@@ -548,18 +590,27 @@ const handleApi = async (request, response, pathname) => {
       unreadCount: unread.rows[0]?.count || 0,
     });
   }
-
   if (request.method === "POST" && pathname === "/api/notifications/read") {
     const readAt = new Date().toISOString();
     await pool.query("UPDATE notifications SET read_at = $1 WHERE read_at IS NULL", [readAt]);
     return sendJson(response, 200, { ok: true, readAt });
   }
+if (request.method === "GET" && pathname === "/api/ai/classify-test") {
+  const description = "Toilet umum di balai desa rusak dan tidak dapat digunakan.";
+
+  const category = await classifyReportWithGemini(description);
+
+  return sendJson(response, 200, {
+    success: true,
+    description,
+    category: category || "Belum diklasifikasi",
+  });
+}
 
   if (request.method === "GET" && pathname === "/api/reports") {
     const result = await pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["reports"]);
     return sendJson(response, 200, result.rows[0]?.data_value || []);
   }
-
   if (request.method === "POST" && pathname === "/api/reports") {
     const body = await readJson(request);
     if (!body.judul || !body.deskripsi || !body.lokasi || !body.ownerId) {
@@ -567,7 +618,7 @@ const handleApi = async (request, response, pathname) => {
         message: "Judul, lokasi, deskripsi, dan identitas pelapor wajib diisi.",
       });
     }
-
+const aiCategory = await classifyReportWithGemini(body.deskripsi);
     const now = new Date();
     const categoryMap = {
       Jalan: "Jalan & Fasilitas",
@@ -588,6 +639,7 @@ const handleApi = async (request, response, pathname) => {
         ownerId: String(body.ownerId),
         ownerName: String(body.ownerName || "Warga Desa").trim(),
         category: categoryMap[body.kategori] || body.kategori || "Lainnya",
+        aiCategory: aiCategory || "Belum diklasifikasi" ,
         status: "Masuk",
         urgency: detectReportUrgency({ title: body.judul, description: body.deskripsi }) ? "Tinggi" : "Sedang",
         votes: 0,
