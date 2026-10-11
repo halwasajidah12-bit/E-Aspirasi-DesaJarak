@@ -103,10 +103,7 @@ const loadEnv = () => {
 };
 loadEnv();
 
-<<<<<<< HEAD
-=======
 
->>>>>>> 1d17c45 (feat: add Gemini report classification)
 // Inisialisasi pool database dengan dukungan DATABASE_URL dan SSL otomatis
 const pool = process.env.DATABASE_URL
   ? new Pool({
