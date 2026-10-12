@@ -1,5 +1,5 @@
 import { createReadStream, readFileSync, existsSync } from "node:fs";
-import { readFile, stat, mkdir } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { createHash, randomBytes, scryptSync } from "node:crypto";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,21 +23,19 @@ const root = fileURLToPath(new URL(".", import.meta.url));
 const port = Number(process.env.PORT || 4173);
 const { Pool } = pg;
 
-// Konfigurasi Multer untuk Upload File
-const uploadDir = join(root, "uploads");
-// Pastikan folder uploads tersedia
-mkdir(uploadDir, { recursive: true }).catch(console.error);
-
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, uploadDir);
-  },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, uniqueSuffix + extname(file.originalname));
+// Konfigurasi Multer: memory storage (file disimpan di database sebagai base64)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB per file
+  fileFilter: (req, file, cb) => {
+    const ext = extname(file.originalname).toLowerCase();
+    if ([".jpg", ".jpeg", ".png", ".gif"].includes(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Hanya file gambar (.jpg, .png, .gif) yang diperbolehkan."), false);
+    }
   },
 });
-const upload = multer({ storage: storage });
 
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
@@ -609,64 +607,87 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
     return sendJson(response, 200, result.rows[0]?.data_value || []);
   }
   if (request.method === "POST" && pathname === "/api/reports") {
-    const body = await readJson(request);
-    if (!body.judul || !body.deskripsi || !body.lokasi || !body.ownerId) {
-      return sendJson(response, 400, {
-        message: "Judul, lokasi, deskripsi, dan identitas pelapor wajib diisi.",
+    return new Promise((resolve, reject) => {
+      upload.array("images", 5)(request, response, async (err) => {
+        if (err) {
+          console.error("Multer upload error:", err);
+          return resolve(sendJson(response, 400, { message: "Gagal mengunggah foto laporan." }));
+        }
+
+        // Dapatkan body dari request (multipart/form-data otomatis terparse oleh multer)
+        const body = request.body || {};
+
+        if (!body.judul || !body.deskripsi || !body.lokasi || !body.ownerId) {
+          return resolve(sendJson(response, 400, {
+            message: "Judul, lokasi, deskripsi, dan identitas pelapor wajib diisi.",
+          }));
+        }
+
+        // Handle uploaded image files → konversi ke base64 data URL, simpan di database
+        const imagePaths = [];
+        if (request.files && Array.isArray(request.files)) {
+          request.files.forEach((file) => {
+            const mimeType = file.mimetype || "image/jpeg";
+            const base64 = file.buffer.toString("base64");
+            imagePaths.push(`data:${mimeType};base64,${base64}`);
+          });
+        }
+
+        const aiCategory = await classifyReportWithGemini(body.deskripsi);
+        const now = new Date();
+        const categoryMap = {
+          Jalan: "Jalan & Fasilitas",
+          Jembatan: "Jalan & Fasilitas",
+          Drainase: "Jalan & Fasilitas",
+          Listrik: "Penerangan",
+          Air: "Lingkungan",
+          Lainya: "Lainnya",
+          Lainnya: "Lainnya",
+        };
+
+        const report = await mutateReports((items) => {
+          const id = `JR-${String(Date.now()).slice(-6)}`;
+          const newReport = {
+            id,
+            title: String(body.judul).trim(),
+            author: String(body.ownerName || "Warga Desa").trim(),
+            ownerId: String(body.ownerId),
+            ownerName: String(body.ownerName || "Warga Desa").trim(),
+            category: categoryMap[body.kategori] || body.kategori || "Lainnya",
+            aiCategory: aiCategory || "Belum diklasifikasi",
+            status: "Masuk",
+            urgency: detectReportUrgency({ title: body.judul, description: body.deskripsi }) ? "Tinggi" : "Sedang",
+            votes: 0,
+            comments: 0,
+            image: imagePaths[0] || body.image || "",
+            images: imagePaths,
+            description: String(body.deskripsi).trim(),
+            location: String(body.lokasi).trim(),
+            rt: body.rt || "-",
+            rw: body.rw || "-",
+            time: body.waktu || now.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }),
+            reportDate: body.tanggal || now.toLocaleDateString("id-ID"),
+            aiSuggestion: "Belum ada komentar warga. Ringkasan akan dibuat setelah warga memberikan masukan.",
+            officialReply: "",
+            submittedAt: now.toISOString(),
+            commentsList: [],
+            statusHistory: [{ status: "Masuk", time: now.toISOString(), reply: "" }],
+          };
+          return { reports: [newReport, ...items], value: newReport };
+        });
+
+        await recordNotification({
+          title: report.urgency === "Tinggi" ? "Laporan baru dengan urgensi tinggi" : "Laporan baru masuk",
+          description: `${report.id}: ${report.title}`,
+          icon: report.urgency === "Tinggi" ? "fa-triangle-exclamation" : "fa-file-circle-plus",
+          color: report.urgency === "Tinggi" ? "bg-rose-50 text-rose-600" : "bg-emerald-50 text-emerald-600",
+          action: { type: "report", id: report.id },
+          eventKey: `report-created-${report.id}`,
+        });
+
+        resolve(sendJson(response, 201, report));
       });
-    }
-const aiCategory = await classifyReportWithGemini(body.deskripsi);
-    const now = new Date();
-    const categoryMap = {
-      Jalan: "Jalan & Fasilitas",
-      Jembatan: "Jalan & Fasilitas",
-      Drainase: "Jalan & Fasilitas",
-      Listrik: "Penerangan",
-      Air: "Lingkungan",
-      Lainya: "Lainnya",
-      Lainnya: "Lainnya",
-    };
-
-    const report = await mutateReports((items) => {
-      const id = `JR-${String(Date.now()).slice(-6)}`;
-      const newReport = {
-        id,
-        title: String(body.judul).trim(),
-        author: String(body.ownerName || "Warga Desa").trim(),
-        ownerId: String(body.ownerId),
-        ownerName: String(body.ownerName || "Warga Desa").trim(),
-        category: categoryMap[body.kategori] || body.kategori || "Lainnya",
-        aiCategory: aiCategory || "Belum diklasifikasi" ,
-        status: "Masuk",
-        urgency: detectReportUrgency({ title: body.judul, description: body.deskripsi }) ? "Tinggi" : "Sedang",
-        votes: 0,
-        comments: 0,
-        image: body.image || "",
-        description: String(body.deskripsi).trim(),
-        location: String(body.lokasi).trim(),
-        rt: body.rt || "-",
-        rw: body.rw || "-",
-        time: body.waktu || now.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }),
-        reportDate: body.tanggal || now.toLocaleDateString("id-ID"),
-        aiSuggestion: "Belum ada komentar warga. Ringkasan akan dibuat setelah warga memberikan masukan.",
-        officialReply: "",
-        submittedAt: now.toISOString(),
-        commentsList: [],
-        statusHistory: [{ status: "Masuk", time: now.toISOString(), reply: "" }],
-      };
-      return { reports: [newReport, ...items], value: newReport };
     });
-
-    await recordNotification({
-      title: report.urgency === "Tinggi" ? "Laporan baru dengan urgensi tinggi" : "Laporan baru masuk",
-      description: `${report.id}: ${report.title}`,
-      icon: report.urgency === "Tinggi" ? "fa-triangle-exclamation" : "fa-file-circle-plus",
-      color: report.urgency === "Tinggi" ? "bg-rose-50 text-rose-600" : "bg-emerald-50 text-emerald-600",
-      action: { type: "report", id: report.id },
-      eventKey: `report-created-${report.id}`,
-    });
-
-    return sendJson(response, 201, report);
   }
 
   if (request.method === "PUT" && /^\/api\/reports\/[^/]+$/.test(pathname)) {
@@ -1166,27 +1187,6 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
 };
 
 const serveStatic = async (response, pathname) => {
-  if (pathname.startsWith("/uploads/")) {
-    const filePath = normalize(join(root, pathname));
-    try {
-      const fileStat = await stat(filePath);
-      if (!fileStat.isFile()) throw new Error("not-file");
-      
-      const mime = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".gif": "image/gif"
-      }[extname(filePath).toLowerCase()] || "application/octet-stream";
-
-      response.writeHead(200, { "Content-Type": mime });
-      return createReadStream(filePath).pipe(response);
-    } catch (e) {
-      response.writeHead(404, { "Content-Type": "text/plain" });
-      return response.end("File tidak ditemukan.");
-    }
-  }
-
   const requested = pathname === "/" ? "/index.html" : pathname;
   const filePath = normalize(join(root, "dist", requested));
 

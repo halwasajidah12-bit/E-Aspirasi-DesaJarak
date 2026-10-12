@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, ScanLine, Camera } from "lucide-react";
 import { createReport, getCategories } from "../../utils/api.js";
@@ -44,6 +44,10 @@ export default function Aspirasi({ session }) {
   });
   const navigate = useNavigate();
   const [submitting, setSubmitting] = useState(false);
+
+  const [files, setFiles] = useState([]);
+  const [previews, setPreviews] = useState([]);
+  const fileInputRef = useRef(null);
 
   // Tarik data kategori dinamis dari database saat form dibuka
   useEffect(() => {
@@ -188,21 +192,57 @@ export default function Aspirasi({ session }) {
           </div>
         )}
 
-        {step === 2 && (
-          <div className="mt-6">
-            <p className="text-center text-xs text-gray-400 mb-4">Foto Laporan</p>
-            <p className="text-xs font-semibold text-gray-700 mb-1">Foto Lokasi (Opsional)</p>
-            <label className="border-2 border-dashed border-emerald-200 bg-emerald-50/50 hover:bg-emerald-50 transition rounded-2xl flex flex-col items-center justify-center py-10 cursor-pointer">
-              <Camera size={34} className="text-emerald-600" />
-              <p className="text-sm font-bold mt-3 text-gray-700">ambil foto/pilih dari galeri</p>
-              <p className="text-xs text-gray-400 mt-1">maks 5 foto, 10 MB .jpg .png</p>
-              <input type="file" accept="image/*" multiple className="hidden" />
-            </label>
-          </div>
-        )}
+          {step === 2 && (
+            <div className="mt-6">
+              <p className="text-center text-xs text-gray-400 mb-4">Foto Laporan</p>
+              <p className="text-xs font-semibold text-gray-700 mb-1">Foto Lokasi (Opsional)</p>
+              <label className="border-2 border-dashed border-emerald-200 bg-emerald-50/50 hover:bg-emerald-50 transition rounded-2xl flex flex-col items-center justify-center py-10 cursor-pointer">
+                <Camera size={34} className="text-emerald-600" />
+                <p className="text-sm font-bold mt-3 text-gray-700">ambil foto/pilih dari galeri</p>
+                <p className="text-xs text-gray-400 mt-1">maks 5 foto, 5 MB .jpg .png .gif</p>
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  max={5}
+                  className="hidden"
+                  ref={fileInputRef}
+                  onChange={(e) => {
+                    const newFiles = Array.from(e.target.files || []).slice(0, 5);
+                    const validFiles = newFiles.filter((f) => f.size <= 5 * 1024 * 1024);
+                    setFiles(validFiles);
+                    setPreviews(validFiles.map((f) => URL.createObjectURL(f)));
+                  }}
+                />
+              </label>
+
+              {previews.length > 0 && (
+                <div className="grid grid-cols-5 gap-2 mt-4">
+                  {previews.map((src, i) => (
+                    <div key={i} className="relative aspect-square rounded-xl overflow-hidden border border-gray-200">
+                      <img src={src} alt={`Preview ${i + 1}`} className="w-full h-full object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const updated = files.filter((_, idx) => idx !== i);
+                          setFiles(updated);
+                          const newPreviews = updated.map((f) => URL.createObjectURL(f));
+                          previews.forEach((p) => URL.revokeObjectURL(p));
+                          setPreviews(newPreviews);
+                        }}
+                        className="absolute top-0.5 right-0.5 bg-rose-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
         <div className="flex gap-3 mt-6">
-          {step > 0 && (
+            {step > 0 && (
             <button
               onClick={() => setStep((s) => s - 1)}
               className="flex-1 rounded-xl border border-emerald-300 text-emerald-700 hover:bg-emerald-50 py-3 text-xs font-semibold transition active:scale-95"
@@ -215,7 +255,11 @@ export default function Aspirasi({ session }) {
               if (step < 2) return setStep((s) => s + 1)
               setSubmitting(true)
               try {
-                await createReport(form, { ownerId: session?.userId, ownerName: session?.name })
+                await createReport(form, { ownerId: session?.userId, ownerName: session?.name }, files)
+                files.forEach((f) => URL.revokeObjectURL(URL.createObjectURL(f)));
+                setFiles([]);
+                setPreviews([]);
+                if (fileInputRef.current) fileInputRef.current.value = "";
                 navigate("/lacak")
               } finally {
                 setSubmitting(false)
