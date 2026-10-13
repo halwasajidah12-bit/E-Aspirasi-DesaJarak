@@ -37,9 +37,47 @@ const upload = multer({
   },
 });
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-});
+const loadEnv = () => {
+  const envPaths = [join(process.cwd(), ".env"), join(root, ".env")];
+  for (const envPath of envPaths) {
+    if (existsSync(envPath)) {
+      const content = readFileSync(envPath, "utf-8");
+      for (const line of content.split("\n")) {
+        const trimmed = line.trim();
+        if (trimmed && !trimmed.startsWith("#") && trimmed.includes("=")) {
+          const [key, ...values] = trimmed.split("=");
+          const value = values.join("=").trim().replace(/^["']|["']$/g, "");
+          if (!process.env[key.trim()]) {
+            process.env[key.trim()] = value;
+          }
+        }
+      }
+      break;
+    }
+  }
+};
+loadEnv();
+
+// Gemini AI client — support both API Key (AIzaSy...) and Bearer Token (AQ.Ab8...)
+let ai;
+const token = process.env.GEMINI_API_KEY;
+
+if (!token) {
+  console.warn("GEMINI_API_KEY not set — AI classification will fail.");
+  ai = new GoogleGenAI({ apiKey: "dummy" });
+} else if (token.startsWith("AIzaSy")) {
+  // Standard API Key from AI Studio
+  ai = new GoogleGenAI({ apiKey: token });
+} else {
+  // Bearer/OAuth token — inject via httpOptions
+  ai = new GoogleGenAI({
+    apiKey: token,
+    httpOptions: {
+      headers: { Authorization: `Bearer ${token}` },
+    },
+  });
+}
+
 const classifyReportWithGemini = async (description) => {
   try {
     const result = await ai.models.generateContent({
@@ -79,28 +117,6 @@ Balas HANYA dengan nama kategorinya.
     return null
   }
 }
-
-const loadEnv = () => {
-  const envPaths = [join(process.cwd(), ".env"), join(root, ".env")];
-  for (const envPath of envPaths) {
-    if (existsSync(envPath)) {
-      const content = readFileSync(envPath, "utf-8");
-      for (const line of content.split("\n")) {
-        const trimmed = line.trim();
-        if (trimmed && !trimmed.startsWith("#") && trimmed.includes("=")) {
-          const [key, ...values] = trimmed.split("=");
-          const value = values.join("=").trim().replace(/^["']|["']$/g, "");
-          if (!process.env[key.trim()]) {
-            process.env[key.trim()] = value;
-          }
-        }
-      }
-      break;
-    }
-  }
-};
-loadEnv();
-
 
 // Inisialisasi pool database dengan dukungan DATABASE_URL dan SSL otomatis
 const pool = process.env.DATABASE_URL
