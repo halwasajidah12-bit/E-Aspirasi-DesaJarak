@@ -119,11 +119,24 @@ Balas HANYA dengan nama kategorinya.
 }
 
 // Inisialisasi pool database dengan dukungan DATABASE_URL dan SSL otomatis
+const hasDatabaseUrl = Boolean(process.env.DATABASE_URL);
+const hasDatabaseConfig =
+  hasDatabaseUrl ||
+  (process.env.PGHOST &&
+    process.env.PGUSER &&
+    process.env.PGPASSWORD &&
+    (process.env.PGDATABASE || process.env.POSTGRES_DB));
+
+if (!hasDatabaseConfig) {
+  throw new Error(
+    "Konfigurasi PostgreSQL belum lengkap. Atur DATABASE_URL atau PGHOST, PGUSER, PGPASSWORD, dan PGDATABASE/POSTGRES_DB pada environment service aplikasi.",
+  );
+}
+
 const pool = process.env.DATABASE_URL
   ? new Pool({
       connectionString: process.env.DATABASE_URL,
       ssl:
-        process.env.DATABASE_URL.includes("localhost") ||
         process.env.DATABASE_URL.includes("railway.internal")
           ? false
           : { rejectUnauthorized: false },
@@ -1253,7 +1266,7 @@ initDatabase()
   .then(() =>
     server.listen(port, "0.0.0.0", () => {
       console.log(`Berhasil terhubung ke database PostgreSQL!`);
-      console.log(`E-Aspirasi listening on http://localhost:${port}`);
+      console.log(`E-Aspirasi listening on port ${port}`);
     }),
   )
   .catch((error) => {

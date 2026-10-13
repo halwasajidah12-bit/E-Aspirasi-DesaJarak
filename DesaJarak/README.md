@@ -42,6 +42,8 @@ npm install
 npm run dev
 ```
 
+Untuk mengarahkan permintaan `/api` dari Vite ke backend yang sudah online saat pengembangan, atur `API_PROXY_TARGET` ke URL backend sebelum menjalankan Vite. Tanpa variabel ini, Vite tidak memakai alamat backend bawaan.
+
 Untuk build produksi:
 
 ```bash
@@ -51,14 +53,10 @@ npm run preview
 
 ### Railway PostgreSQL
 
-Backend membaca koneksi dari environment variable Railway. Hubungkan service aplikasi ke service PostgreSQL menggunakan **Variable Reference**, atau isi variabel berikut pada service aplikasi:
+Backend membaca `DATABASE_URL` atau variabel koneksi `PG*` dari environment service aplikasi. Di **service aplikasi** Railway, tambahkan `DATABASE_URL` sebagai Variable Reference ke service PostgreSQL. Ganti `Postgres` di bawah dengan nama service PostgreSQL persis seperti yang tampil di project Railway:
 
 ```text
-PGHOST=${{Postgres.PGHOST}}
-PGPORT=${{Postgres.PGPORT}}
-PGUSER=${{Postgres.PGUSER}}
-PGPASSWORD=${{Postgres.PGPASSWORD}}
-POSTGRES_DB=${{Postgres.POSTGRES_DB}}
+DATABASE_URL=postgresql://${{Postgres.POSTGRES_USER}}:${{Postgres.POSTGRES_PASSWORD}}@${{Postgres.RAILWAY_PRIVATE_DOMAIN}}:5432/${{Postgres.POSTGRES_DB}}
 ```
 
-`DATABASE_URL` juga didukung dan akan diprioritaskan jika tersedia. Saat pertama kali berjalan, server membuat tabel `users` dan `app_data`, lalu memasukkan data awal dari `src/data/initialData.js` dan `src/user/data/`. Jangan menaruh password database di source code atau repository.
+Pastikan service aplikasi dan PostgreSQL berada di project/environment Railway yang sama dan terhubung melalui private network. `DATABASE_URL` diprioritaskan jika tersedia. Alternatifnya, tambahkan `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, dan `PGDATABASE` ke service aplikasi menggunakan Variable Reference ke service PostgreSQL. Jangan menaruh password langsung di source code atau repository. `PGDATA` dan `SSL_CERT_DAYS` adalah konfigurasi service PostgreSQL dan tidak dibaca oleh backend. Saat pertama kali berjalan, server membuat tabel `users` dan `app_data`, lalu memasukkan data awal dari `src/data/initialData.js` dan `src/user/data/`.
