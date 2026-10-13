@@ -51,14 +51,17 @@ npm run preview
 
 ### Railway PostgreSQL
 
-Backend membaca koneksi dari environment variable Railway. Hubungkan service aplikasi ke service PostgreSQL menggunakan **Variable Reference**, atau isi variabel berikut pada service aplikasi:
+Backend membaca `DATABASE_URL` atau variabel koneksi `PG*` dari environment service aplikasi. Atur variabel berikut di Railway; simpan password sebagai variable rahasia dan jangan masukkan nilainya ke source code atau repository:
 
 ```text
-PGHOST=${{Postgres.PGHOST}}
-PGPORT=${{Postgres.PGPORT}}
-PGUSER=${{Postgres.PGUSER}}
-PGPASSWORD=${{Postgres.PGPASSWORD}}
-POSTGRES_DB=${{Postgres.POSTGRES_DB}}
+DATABASE_URL=postgresql://${{PGUSER}}:${{POSTGRES_PASSWORD}}@${{RAILWAY_PRIVATE_DOMAIN}}:5432/${{PGDATABASE}}
+PGHOST=${{RAILWAY_PRIVATE_DOMAIN}}
+PGPORT=5432
+PGUSER=${{POSTGRES_USER}}
+PGPASSWORD=${{POSTGRES_PASSWORD}}
+PGDATABASE=${{POSTGRES_DB}}
+POSTGRES_DB=railway
+POSTGRES_USER=postgres
 ```
 
-`DATABASE_URL` juga didukung dan akan diprioritaskan jika tersedia. Saat pertama kali berjalan, server membuat tabel `users` dan `app_data`, lalu memasukkan data awal dari `src/data/initialData.js` dan `src/user/data/`. Jangan menaruh password database di source code atau repository.
+`DATABASE_URL` diprioritaskan jika tersedia. Referensi `${{...}}` harus mengarah ke variable PostgreSQL pada Railway. `PGDATA` dan `SSL_CERT_DAYS` adalah konfigurasi service PostgreSQL dan tidak dibaca oleh backend. Saat pertama kali berjalan, server membuat tabel `users` dan `app_data`, lalu memasukkan data awal dari `src/data/initialData.js` dan `src/user/data/`.
