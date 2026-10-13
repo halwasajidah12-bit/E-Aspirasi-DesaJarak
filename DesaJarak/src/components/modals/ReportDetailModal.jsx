@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { StatusBadge, UrgencyBadge } from '../../utils/badges.jsx'
+import ProtectedImage from '../../user/components/ProtectedImage.jsx'
 
 export default function ReportDetailModal({ report, onClose, onSave }) {
   const [status, setStatus] = useState('Masuk')
@@ -33,7 +34,7 @@ export default function ReportDetailModal({ report, onClose, onSave }) {
         </div>
 
         <div className="space-y-3 text-xs">
-          <img src={report.image} alt="Foto Laporan" className="w-full h-40 object-cover rounded-xl border border-gray-200 shadow-inner" />
+          <ProtectedImage src={report.image} privateAccess={report.visibility === 'private'} alt="Foto Laporan" className="w-full h-40 object-cover rounded-xl border border-gray-200 shadow-inner" />
           <div className="grid grid-cols-2 gap-2">
             <div className="bg-emerald-50 rounded-xl p-2.5 border border-emerald-100">
               <p className="text-[9px] text-gray-400">Tanggal Laporan</p>
@@ -54,6 +55,23 @@ export default function ReportDetailModal({ report, onClose, onSave }) {
               <StatusBadge status={report.status} />
               <UrgencyBadge urgency={report.urgency} />
             </div>
+          </div>
+
+          <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-3">
+            <p className="text-[10px] text-gray-500">Lokasi laporan</p>
+            <p className="font-semibold text-gray-800 mt-0.5">{report.location || "Lokasi tidak dicantumkan"}</p>
+            {Number.isFinite(report.coordinates?.latitude) && Number.isFinite(report.coordinates?.longitude) ? (
+              <a
+                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${report.coordinates.latitude},${report.coordinates.longitude}`)}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-block mt-1 text-emerald-700 font-semibold underline"
+              >
+                Buka titik GPS di peta{report.locationAccuracy != null ? ` · akurasi ±${report.locationAccuracy} m` : ""}
+              </a>
+            ) : (
+              <p className="text-[10px] text-gray-500 mt-1">Laporan ini tidak menyertakan koordinat GPS.</p>
+            )}
           </div>
 
           <div>

@@ -1,11 +1,12 @@
 import { createReadStream, readFileSync, existsSync } from "node:fs";
 import { readFile, stat, mkdir } from "node:fs/promises";
 import { createHash, randomBytes, scryptSync } from "node:crypto";
-import { extname, join, normalize } from "node:path";
+import { basename, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
 import pg from "pg";
 import { GoogleGenAI } from "@google/genai";
+import { OAuth2Client } from "google-auth-library";
 import multer from "multer";
 
 import {
@@ -37,12 +38,17 @@ const storage = multer.diskStorage({
     cb(null, uniqueSuffix + extname(file.originalname));
   },
 });
-const upload = multer({ storage: storage });
-
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_request, file, callback) => {
+    if (["image/jpeg", "image/png", "image/gif", "image/webp"].includes(file.mimetype)) callback(null, true);
+    else callback(new Error("File harus berupa gambar."));
+  },
 });
+
 const classifyReportWithGemini = async (description) => {
+  if (!ai) return null;
   try {
     const result = await ai.models.generateContent({
       model: 'gemini-3.5-flash-lite',
@@ -102,6 +108,8 @@ const loadEnv = () => {
   }
 };
 loadEnv();
+const googleAuthClient = new OAuth2Client();
+const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
 
 
 // Inisialisasi pool database dengan dukungan DATABASE_URL dan SSL otomatis
@@ -236,6 +244,39 @@ const recordNotification = async ({ title, description, icon, color, action, eve
   return result.rows[0];
 };
 
+const escapeHtml = (value) => String(value ?? "").replace(/[&<>\"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[char]);
+
+const sendTransactionalEmail = async ({ to, subject, text, html }) => {
+  const apiKey = process.env.RESEND_API_KEY;
+  const from = process.env.RESEND_FROM_EMAIL;
+  if (!apiKey || !from) return false;
+  try {
+    const result = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ from, to: [to], subject, text, html }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!result.ok) console.error("Layanan email menolak permintaan dengan status", result.status);
+    return result.ok;
+  } catch (error) {
+    console.error("Pengiriman email gagal:", error.message);
+    return false;
+  }
+};
+
+const sendEmailVerification = async ({ email, fullname, token }) => {
+  const baseUrl = (process.env.APP_BASE_URL || `http://localhost:${port}`).replace(/\/$/, "");
+  const link = `${baseUrl}/api/email/verify?token=${encodeURIComponent(token)}`;
+  const name = escapeHtml(fullname || "Warga Desa");
+  return sendTransactionalEmail({
+    to: email,
+    subject: "Konfirmasi notifikasi email E-Aspirasi Desa Jarak",
+    text: `Halo ${fullname || "Warga Desa"}, buka tautan berikut untuk mengaktifkan notifikasi status aspirasi: ${link}\nTautan berlaku selama 30 menit.`,
+    html: `<p>Halo ${name},</p><p>Konfirmasi alamat email Anda untuk mengaktifkan notifikasi status aspirasi E-Aspirasi Desa Jarak.</p><p><a href="${link}">Konfirmasi email</a></p><p>Tautan berlaku selama 30 menit. Jika Anda tidak meminta ini, abaikan email ini.</p>`,
+  });
+};
+
 const formatNotification = (row) => ({
   id: row.id,
   title: row.title,
@@ -315,6 +356,85 @@ const passwordMatches = (password, salt, expected) =>
     .update(hashPassword(password, salt).hash)
     .digest("hex") === createHash("sha256").update(expected).digest("hex");
 
+const safeUser = (user) => ({
+  userId: user.username,
+  username: user.username,
+  name: user.fullname || user.nama || user.username,
+  email: user.email || "",
+  role: user.role === "admin" ? "admin" : "user",
+});
+
+const createSession = async (user) => {
+  const token = randomBytes(32).toString("base64url");
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+  await pool.query(
+    "INSERT INTO user_sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)",
+    [createHash("sha256").update(token).digest("hex"), user.id, expiresAt],
+  );
+  return { ...safeUser(user), token, expiresAt: expiresAt.toISOString() };
+};
+
+const getAuthenticatedUser = async (request) => {
+  const authorization = request.headers.authorization || "";
+  const token = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+  if (!token) return null;
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  const result = await pool.query(
+    `SELECT u.id, u.username, u.fullname, u.nama, u.email, u.role
+     FROM user_sessions s JOIN users u ON u.id = s.user_id
+     WHERE s.token_hash = $1 AND s.expires_at > NOW()`,
+    [tokenHash],
+  );
+  return result.rows[0] || null;
+};
+
+const isAdmin = (user) => user?.role === "admin" || user?.username === "admin";
+
+const uploadMimeType = (filename) => ({
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+}[extname(filename).toLowerCase()] || "application/octet-stream");
+
+const verifyGoogleCredential = async (credential) => {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  if (!clientId) {
+    const error = new Error("Login Google belum dikonfigurasi. Atur GOOGLE_CLIENT_ID pada environment backend.");
+    error.status = 503;
+    throw error;
+  }
+  if (!credential || typeof credential !== "string" || credential.length > 10000) {
+    const error = new Error("Kredensial Google tidak valid.");
+    error.status = 400;
+    throw error;
+  }
+
+  let ticket;
+  try {
+    ticket = await googleAuthClient.verifyIdToken({ idToken: credential, audience: clientId });
+  } catch (verificationError) {
+    const networkErrorCodes = new Set(["ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED"]);
+    const verificationCode = verificationError.code || verificationError.cause?.code;
+    const certificatesUnavailable = verificationError.message?.startsWith("Failed to retrieve verification certificates") ||
+      networkErrorCodes.has(verificationCode) || verificationError.response?.status >= 500;
+    const error = new Error(certificatesUnavailable
+      ? "Server tidak dapat menghubungi layanan verifikasi Google. Coba lagi beberapa saat."
+      : "Verifikasi akun Google gagal. Pastikan Client ID sesuai lalu coba lagi.");
+    error.status = certificatesUnavailable ? 503 : 401;
+    throw error;
+  }
+
+  const claims = ticket.getPayload();
+  if (!claims?.sub || !claims.email || claims.email_verified !== true) {
+    const error = new Error("Akun Google tidak dapat diverifikasi untuk aplikasi ini.");
+    error.status = 401;
+    throw error;
+  }
+  return claims;
+};
+
 const mutateNews = async (mutator) => {
   const client = await pool.connect();
   try {
@@ -387,6 +507,24 @@ const mutateReports = async (mutator) => {
   }
 };
 
+const awardPoints = async (userId, activityType, referenceId, description, points) => {
+  const result = await pool.query(
+    `WITH new_activity AS (
+       INSERT INTO reward_activities (user_id, activity_type, reference_id, description, points)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (user_id, activity_type, reference_id) DO NOTHING
+       RETURNING user_id, points
+     )
+     UPDATE users
+     SET poin = COALESCE(users.poin, 0) + new_activity.points
+     FROM new_activity
+     WHERE users.id = new_activity.user_id
+     RETURNING users.poin`,
+    [userId, activityType, String(referenceId), description, points],
+  );
+  return result.rows[0]?.poin ?? null;
+};
+
 const initDatabase = async () => {
   try {
     await pool.query(`ALTER TABLE komentar ALTER COLUMN aspirasi_id TYPE TEXT;`);
@@ -406,6 +544,28 @@ const initDatabase = async () => {
       password_hash TEXT,
       password_salt TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      token_hash TEXT PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS report_votes (
+      report_id TEXT NOT NULL,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (report_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS reward_activities (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      activity_type TEXT NOT NULL,
+      reference_id TEXT NOT NULL,
+      description TEXT NOT NULL,
+      points INT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_id, activity_type, reference_id)
     );
     CREATE TABLE IF NOT EXISTS notifications (
       id BIGSERIAL PRIMARY KEY,
@@ -443,10 +603,32 @@ const initDatabase = async () => {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS alamat TEXT;`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS foto TEXT;`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS nik TEXT;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS google_sub TEXT;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_notifications_enabled BOOLEAN NOT NULL DEFAULT FALSE;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_token_hash TEXT;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_expires_at TIMESTAMPTZ;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_sent_at TIMESTAMPTZ;`);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub_unique ON users (google_sub) WHERE google_sub IS NOT NULL;`);
 
     await pool.query(`ALTER TABLE komentar ALTER COLUMN aspirasi_id TYPE TEXT;`);
     await pool.query(`ALTER TABLE komentar ALTER COLUMN user_id TYPE TEXT;`);
   } catch (err) {}
+
+  try {
+    await pool.query("CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique_lower ON users (LOWER(email)) WHERE email IS NOT NULL");
+  } catch (error) {
+    console.warn("Index email unik tidak dibuat; periksa email pengguna duplikat.", error.message);
+  }
+
+  const legacyPasswords = await pool.query("SELECT id, password FROM users WHERE password IS NOT NULL AND password <> ''");
+  for (const user of legacyPasswords.rows) {
+    const credentials = hashPassword(user.password);
+    await pool.query(
+      "UPDATE users SET password_hash = $1, password_salt = $2, password = NULL WHERE id = $3",
+      [credentials.hash, credentials.salt, user.id],
+    );
+  }
 
   for (const [key, value] of Object.entries(seedData)) {
     await pool.query(
@@ -529,9 +711,9 @@ const initDatabase = async () => {
       const existingUser = await pool.query("SELECT id FROM users WHERE username = $1 OR email = $2", [username, email]);
       if (existingUser.rows.length === 0) {
         await pool.query(
-          `INSERT INTO users (username, fullname, password_hash, password_salt, nama, email, password, role, poin)
-           VALUES ($1, $2, $3, $4, $2, $5, $6, $7, 0)`,
-          [username, fullname, credentials.hash, credentials.salt, email, rawPassword, role],
+          `INSERT INTO users (username, fullname, password_hash, password_salt, nama, email, role, poin)
+           VALUES ($1, $2, $3, $4, $2, $5, $6, 0)`,
+          [username, fullname, credentials.hash, credentials.salt, email, role],
         ); 
       }
     } catch (err) {
@@ -540,7 +722,121 @@ const initDatabase = async () => {
   }
 };
 
-const handleApi = async (request, response, pathname) => {
+const handleApi = async (request, response, url) => {
+  const { pathname, searchParams } = url;
+  const principal = await getAuthenticatedUser(request);
+
+  if (request.method === "GET" && pathname === "/api/auth/config") {
+    return sendJson(response, 200, { googleClientId: process.env.GOOGLE_CLIENT_ID || "" });
+  }
+
+  if (request.method === "GET" && pathname === "/api/auth/session") {
+    if (!principal) return sendJson(response, 401, { message: "Sesi tidak berlaku." });
+    return sendJson(response, 200, safeUser(principal));
+  }
+
+  if (request.method === "GET" && pathname === "/api/user/email-preferences") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk mengatur notifikasi email." });
+    const result = await pool.query("SELECT email, email_verified, email_notifications_enabled FROM users WHERE id = $1", [principal.id]);
+    const user = result.rows[0];
+    return sendJson(response, 200, {
+      email: user?.email || "",
+      emailVerified: Boolean(user?.email_verified),
+      enabled: Boolean(user?.email_notifications_enabled),
+      configured: Boolean(process.env.RESEND_API_KEY && process.env.RESEND_FROM_EMAIL),
+    });
+  }
+
+  if (request.method === "PUT" && pathname === "/api/user/email-preferences") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk mengatur notifikasi email." });
+    const body = await readJson(request);
+    const enabled = Boolean(body.enabled);
+    const result = await pool.query("SELECT email, fullname, email_verified, email_notifications_enabled, email_verification_sent_at FROM users WHERE id = $1", [principal.id]);
+    const user = result.rows[0];
+    if (!user?.email) return sendJson(response, 400, { message: "Tambahkan alamat email pada akun Anda terlebih dahulu." });
+    if (!enabled) {
+      await pool.query("UPDATE users SET email_notifications_enabled = FALSE, email_verification_token_hash = NULL, email_verification_expires_at = NULL, email_verification_sent_at = NULL WHERE id = $1", [principal.id]);
+      return sendJson(response, 200, { enabled: false, emailVerified: Boolean(user.email_verified), email: user.email });
+    }
+    if (user.email_verified) {
+      await pool.query("UPDATE users SET email_notifications_enabled = TRUE WHERE id = $1", [principal.id]);
+      return sendJson(response, 200, { enabled: true, emailVerified: true, email: user.email });
+    }
+    if (!process.env.RESEND_API_KEY || !process.env.RESEND_FROM_EMAIL) {
+      return sendJson(response, 503, { message: "Pengiriman email belum dikonfigurasi oleh pengelola website." });
+    }
+    if (user.email_verification_sent_at && Date.now() - new Date(user.email_verification_sent_at).getTime() < 60_000) {
+      return sendJson(response, 429, { message: "Email konfirmasi baru saja dikirim. Tunggu satu menit sebelum meminta lagi." });
+    }
+    const token = randomBytes(32).toString("hex");
+    const tokenHash = createHash("sha256").update(token).digest("hex");
+    await pool.query("UPDATE users SET email_verification_token_hash = $1, email_verification_expires_at = NOW() + INTERVAL '30 minutes', email_verification_sent_at = NOW() WHERE id = $2", [tokenHash, principal.id]);
+    const sent = await sendEmailVerification({ email: user.email, fullname: user.fullname || principal.nama, token });
+    if (!sent) {
+      await pool.query("UPDATE users SET email_verification_token_hash = NULL, email_verification_expires_at = NULL, email_verification_sent_at = NULL WHERE id = $1", [principal.id]);
+      return sendJson(response, 502, { message: "Email konfirmasi gagal dikirim. Periksa konfigurasi layanan email." });
+    }
+    return sendJson(response, 200, { enabled: false, emailVerified: false, verificationSent: true, email: user.email });
+  }
+
+  if (request.method === "GET" && pathname === "/api/email/verify") {
+    const token = searchParams.get("token") || "";
+    const tokenHash = createHash("sha256").update(token).digest("hex");
+    const verified = await pool.query("UPDATE users SET email_verified = TRUE, email_notifications_enabled = TRUE, email_verification_token_hash = NULL, email_verification_expires_at = NULL, email_verification_sent_at = NULL WHERE email_verification_token_hash = $1 AND email_verification_expires_at > NOW() RETURNING id", [tokenHash]);
+    const success = verified.rowCount > 0;
+    response.writeHead(success ? 200 : 400, { "Content-Type": "text/html; charset=utf-8" });
+    response.end(success
+      ? "<!doctype html><html lang='id'><meta charset='utf-8'><title>Email dikonfirmasi</title><body style='font:16px sans-serif;max-width:560px;margin:15vh auto;padding:24px'><h1>Email berhasil dikonfirmasi</h1><p>Notifikasi status aspirasi sekarang aktif. Anda dapat kembali ke dashboard E-Aspirasi Desa Jarak.</p></body></html>"
+      : "<!doctype html><html lang='id'><meta charset='utf-8'><title>Tautan tidak berlaku</title><body style='font:16px sans-serif;max-width:560px;margin:15vh auto;padding:24px'><h1>Tautan konfirmasi tidak berlaku</h1><p>Silakan masuk kembali dan minta email konfirmasi baru dari halaman Pengaturan.</p></body></html>");
+    return;
+  }
+
+  if (request.method === "DELETE" && pathname === "/api/auth/session") {
+    const token = (request.headers.authorization || "").replace(/^Bearer\s+/i, "").trim();
+    if (token) {
+      await pool.query("DELETE FROM user_sessions WHERE token_hash = $1", [createHash("sha256").update(token).digest("hex")]);
+    }
+    return sendJson(response, 200, { success: true });
+  }
+
+  if (request.method === "POST" && pathname === "/api/auth/google") {
+    const body = await readJson(request);
+    try {
+      const claims = await verifyGoogleCredential(body.credential);
+      const existing = await pool.query(
+        "SELECT * FROM users WHERE google_sub = $1 OR LOWER(email) = LOWER($2) ORDER BY CASE WHEN google_sub = $1 THEN 0 ELSE 1 END LIMIT 1",
+        [claims.sub, claims.email],
+      );
+      let user = existing.rows[0];
+      const displayName = String(claims.name || claims.given_name || claims.email.split("@")[0]).trim();
+      if (user && isAdmin(user)) {
+        return sendJson(response, 403, { message: "Akun admin harus masuk menggunakan password admin." });
+      }
+
+      if (user) {
+        const linked = await pool.query(
+          "UPDATE users SET google_sub = COALESCE(google_sub, $1), email_verified = TRUE, foto = COALESCE(foto, $2), fullname = COALESCE(NULLIF(fullname, ''), $3), nama = COALESCE(NULLIF(nama, ''), $3) WHERE id = $4 RETURNING *",
+          [claims.sub, claims.picture || null, displayName, user.id],
+        );
+        user = linked.rows[0];
+      } else {
+        const username = `google-${claims.sub}`;
+        const created = await pool.query(
+          `INSERT INTO users (username, fullname, nama, email, google_sub, foto, role, poin, email_verified)
+           VALUES ($1, $2, $2, $3, $4, $5, 'warga', 0, TRUE) RETURNING *`,
+          [username, displayName, claims.email, claims.sub, claims.picture || null],
+        );
+        user = created.rows[0];
+      }
+
+      return sendJson(response, 200, { success: true, ...await createSession(user) });
+    } catch (error) {
+      if (error.status) return sendJson(response, error.status, { message: error.message });
+      if (error.code === "23505") return sendJson(response, 409, { message: "Akun Google sudah terhubung ke pengguna lain." });
+      throw error;
+    }
+  }
+
   // --- API GET DAFTAR KATEGORI INFRASTRUKTUR ---
   if (request.method === "GET" && pathname === "/api/categories") {
     try {
@@ -561,6 +857,7 @@ const handleApi = async (request, response, pathname) => {
 
   // --- API POST TAMBAH KATEGORI ---
   if (request.method === "POST" && pathname === "/api/categories") {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const body = await readJson(request);
    
     if (!body.nama_kategori) return sendJson(response, 400, { message: "Nama kategori wajib diisi" });
@@ -580,6 +877,7 @@ const handleApi = async (request, response, pathname) => {
 
   // --- API DELETE KATEGORI ---
   if (request.method === "DELETE" && pathname.startsWith("/api/categories/")) {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const id = pathname.split("/").pop();
     try {
       await pool.query("DELETE FROM kategori_infrastruktur WHERE id = $1", [id]);
@@ -591,6 +889,7 @@ const handleApi = async (request, response, pathname) => {
   }
 
   if (request.method === "GET" && pathname === "/api/notifications") {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const result = await pool.query(
       "SELECT id, title, description, icon, color, action, created_at, read_at FROM notifications ORDER BY created_at DESC LIMIT 100",
     );
@@ -601,6 +900,7 @@ const handleApi = async (request, response, pathname) => {
     });
   }
   if (request.method === "POST" && pathname === "/api/notifications/read") {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const readAt = new Date().toISOString();
     await pool.query("UPDATE notifications SET read_at = $1 WHERE read_at IS NULL", [readAt]);
     return sendJson(response, 200, { ok: true, readAt });
@@ -617,13 +917,100 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
   });
 }
 
+  if (request.method === "POST" && pathname === "/api/assistant") {
+    const body = await readJson(request);
+    const message = String(body.message || "").trim().slice(0, 1000);
+    if (!message) return sendJson(response, 400, { message: "Tulis pertanyaan terlebih dahulu." });
+    const reportResult = await pool.query("SELECT data_value FROM app_data WHERE data_key = 'reports'");
+    const availableReports = (reportResult.rows[0]?.data_value || []).filter((report) =>
+      report.visibility !== "private" || (principal && String(report.ownerId) === principal.username),
+    );
+    const reportContext = availableReports.map(({ id, title, status, category }) => ({ id, title, status, category }));
+    if (ai) {
+      try {
+        const result = await ai.models.generateContent({
+          model: "gemini-3.5-flash-lite",
+          contents: `Kamu asisten layanan warga Desa Jarak. Jawab singkat, sopan, dalam Bahasa Indonesia. Jangan mengarang kebijakan/nomor kontak. Jika data tidak tersedia, katakan demikian. Data aspirasi yang boleh diketahui pengguna ini: ${JSON.stringify(reportContext)}\n\nPertanyaan warga: ${message}`,
+        });
+        if (result.text?.trim()) return sendJson(response, 200, { reply: result.text.trim(), mode: "ai" });
+      } catch (error) {
+        console.error("Asisten AI gagal menjawab:", error.message);
+      }
+    }
+    const normalized = message.toLowerCase();
+    const idMatch = message.match(/\bJR-[\w-]+\b/i);
+    const matchedReport = idMatch && availableReports.find((report) => String(report.id).toLowerCase() === idMatch[0].toLowerCase());
+    let reply;
+    if (matchedReport) reply = `Laporan ${matchedReport.id} (${matchedReport.title}) berstatus ${matchedReport.status}.`;
+    else if (normalized.includes("privasi") || normalized.includes("rahasia") || normalized.includes("pribadi")) reply = "Aspirasi dengan pilihan privat hanya dapat dilihat oleh akun Anda dan petugas admin. Pilih opsi Privat saat mengirim aspirasi.";
+    else if (normalized.includes("lapor") || normalized.includes("aspirasi")) reply = "Buka menu Aspirasi, isi judul, lokasi, dan deskripsi dengan jelas. Anda dapat memilih laporan privat atau publik sebelum mengirim.";
+    else if (normalized.includes("status") || normalized.includes("lacak")) reply = "Untuk melihat tindak lanjut, buka menu Lacak atau Riwayat. Masukkan kode laporan seperti JR-123456 agar saya dapat membantu mengecek statusnya.";
+    else if (normalized.includes("berapa hari") || normalized.includes("ditindaklanjuti")) reply = "Waktu tindak lanjut bergantung pada jenis masalah dan proses pemeriksaan desa. Pantau status terbaru melalui menu Riwayat atau Lacak Laporan.";
+    else reply = "Saya dapat membantu menjelaskan cara membuat aspirasi, privasi laporan, dan cara melacak status. Sertakan kode laporan jika ingin mengecek status tertentu.";
+    return sendJson(response, 200, { reply, mode: "guide" });
+  }
+
+  if (request.method === "GET" && pathname === "/api/rewards") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk melihat poin reward." });
+    const [userResult, rankResult, leaderboardResult, activityResult, reportResult] = await Promise.all([
+      pool.query("SELECT COALESCE(poin, 0)::int AS points FROM users WHERE id = $1", [principal.id]),
+      pool.query("SELECT rank::int FROM (SELECT id, ROW_NUMBER() OVER (ORDER BY COALESCE(poin, 0) DESC, created_at ASC, id ASC) AS rank FROM users WHERE role <> 'admin') ranked WHERE id = $1", [principal.id]),
+      pool.query("SELECT id, COALESCE(poin, 0)::int AS points FROM users WHERE role <> 'admin' ORDER BY COALESCE(poin, 0) DESC, created_at ASC, id ASC LIMIT 10"),
+      pool.query("SELECT activity_type, reference_id, description, points, created_at FROM reward_activities WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20", [principal.id]),
+      pool.query("SELECT data_value FROM app_data WHERE data_key = 'reports'"),
+    ]);
+    const userReports = (reportResult.rows[0]?.data_value || []).filter((report) => String(report.ownerId) === principal.username).length;
+    const totalsResult = await pool.query("SELECT activity_type, COUNT(*)::int AS count FROM reward_activities WHERE user_id = $1 GROUP BY activity_type", [principal.id]);
+    const totals = Object.fromEntries(totalsResult.rows.map((row) => [row.activity_type, row.count]));
+    const citizens = await pool.query("SELECT COUNT(*)::int AS count FROM users WHERE role <> 'admin'");
+    return sendJson(response, 200, {
+      points: userResult.rows[0]?.points || 0,
+      rank: Number(rankResult.rows[0]?.rank || 1),
+      citizenCount: citizens.rows[0]?.count || 0,
+      counts: { reports: userReports, votes: totals.vote || 0, comments: (totals.report_comment || 0) + (totals.news_comment || 0) },
+      leaderboard: leaderboardResult.rows.map((row, index) => ({ name: `Warga #${index + 1}`, points: row.points })),
+      activities: activityResult.rows.map((row) => ({ type: row.activity_type, referenceId: row.reference_id, description: row.description, points: row.points, createdAt: row.created_at })),
+    });
+  }
+
   if (request.method === "GET" && pathname === "/api/reports") {
+    const scope = searchParams.get("scope") || (isAdmin(principal) ? "all" : "public");
+    if (!["public", "accessible", "mine", "all"].includes(scope)) {
+      return sendJson(response, 400, { message: "Pilihan daftar laporan tidak valid." });
+    }
+    if (["mine", "all"].includes(scope) && !principal) {
+      return sendJson(response, 401, { message: "Masuk ke akun warga untuk melihat riwayat pribadi." });
+    }
+    if (scope === "all" && !isAdmin(principal)) {
+      return sendJson(response, 403, { message: "Akses admin diperlukan." });
+    }
     const result = await pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["reports"]);
-    return sendJson(response, 200, result.rows[0]?.data_value || []);
+    const stored = result.rows[0]?.data_value || [];
+    const votesResult = await pool.query("SELECT report_id, COUNT(*)::int AS count FROM report_votes GROUP BY report_id");
+    const voteCounts = new Map(votesResult.rows.map((row) => [String(row.report_id), row.count]));
+    const myVotes = principal
+      ? await pool.query("SELECT report_id FROM report_votes WHERE user_id = $1", [principal.id])
+      : { rows: [] };
+    const myVoteIds = new Set(myVotes.rows.map((row) => String(row.report_id)));
+    const reports = stored
+      .filter((report) => {
+        const isPrivate = report.visibility === "private";
+        if (scope === "mine") return String(report.ownerId) === principal?.username;
+        if (scope === "accessible") return !isPrivate || String(report.ownerId) === principal?.username || isAdmin(principal);
+        if (scope === "public") return !isPrivate;
+        return true;
+      })
+      .map((report) => ({
+        ...report,
+        votes: report.votesManaged ? (voteCounts.get(String(report.id)) || 0) : (voteCounts.get(String(report.id)) || report.votes || 0),
+        votedByMe: myVoteIds.has(String(report.id)),
+      }));
+    return sendJson(response, 200, reports);
   }
   if (request.method === "POST" && pathname === "/api/reports") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk mengirim aspirasi." });
     const body = await readJson(request);
-    if (!body.judul || !body.deskripsi || !body.lokasi || !body.ownerId) {
+    if (!body.judul || !body.deskripsi || !body.lokasi) {
       return sendJson(response, 400, {
         message: "Judul, lokasi, deskripsi, dan identitas pelapor wajib diisi.",
       });
@@ -642,12 +1029,17 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
 
     const report = await mutateReports((items) => {
       const id = `JR-${String(Date.now()).slice(-6)}`;
+      const latitude = Number(body.latitude);
+      const longitude = Number(body.longitude);
+      const hasCoordinates = body.latitude !== undefined && body.latitude !== null && body.latitude !== "" && body.longitude !== undefined && body.longitude !== null && body.longitude !== "";
+      const validCoordinates = hasCoordinates && Number.isFinite(latitude) && Number.isFinite(longitude) && latitude >= -90 && latitude <= 90 && longitude >= -180 && longitude <= 180;
       const newReport = {
         id,
         title: String(body.judul).trim(),
-        author: String(body.ownerName || "Warga Desa").trim(),
-        ownerId: String(body.ownerId),
-        ownerName: String(body.ownerName || "Warga Desa").trim(),
+        author: principal.fullname || principal.nama || "Warga Desa",
+        ownerId: principal.username,
+        ownerName: principal.fullname || principal.nama || "Warga Desa",
+        visibility: body.visibility === "public" ? "public" : "private",
         category: categoryMap[body.kategori] || body.kategori || "Lainnya",
         aiCategory: aiCategory || "Belum diklasifikasi" ,
         status: "Masuk",
@@ -657,6 +1049,14 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
         image: body.image || "",
         description: String(body.deskripsi).trim(),
         location: String(body.lokasi).trim(),
+        infrastructureId: String(body.infrastructureId || "").trim(),
+        coordinates: validCoordinates ? { latitude, longitude } : null,
+        locationAccuracy: validCoordinates && body.locationAccuracy !== "" && Number.isFinite(Number(body.locationAccuracy))
+          ? Math.max(0, Math.round(Number(body.locationAccuracy)))
+          : null,
+        locationSource: validCoordinates && ["gps", "qr-gps"].includes(body.locationSource)
+          ? body.locationSource
+          : null,
         rt: body.rt || "-",
         rw: body.rw || "-",
         time: body.waktu || now.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }),
@@ -670,6 +1070,8 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
       return { reports: [newReport, ...items], value: newReport };
     });
 
+    await awardPoints(principal.id, "report", report.id, `Mengirim aspirasi ${report.id}`, 20);
+
     await recordNotification({
       title: report.urgency === "Tinggi" ? "Laporan baru dengan urgensi tinggi" : "Laporan baru masuk",
       description: `${report.id}: ${report.title}`,
@@ -682,7 +1084,87 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
     return sendJson(response, 201, report);
   }
 
+  if (request.method === "GET" && /^\/api\/uploads\/[^/]+$/.test(pathname)) {
+    if (!principal) return sendJson(response, 401, { message: "Masuk untuk membuka gambar pribadi." });
+    const filename = decodeURIComponent(pathname.slice("/api/uploads/".length));
+    if (basename(filename) !== filename) return sendJson(response, 404, { message: "File tidak ditemukan." });
+    const [profileOwner, reportsResult] = await Promise.all([
+      pool.query("SELECT username FROM users WHERE foto = $1", [filename]),
+      pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["reports"]),
+    ]);
+    const reportOwners = (reportsResult.rows[0]?.data_value || [])
+      .filter((report) => report.visibility === "private" && report.image === `/uploads/${filename}`)
+      .map((report) => String(report.ownerId));
+    const allowed = isAdmin(principal) ||
+      profileOwner.rows.some((row) => row.username === principal.username) ||
+      reportOwners.includes(principal.username);
+    if (!allowed) return sendJson(response, 404, { message: "File tidak ditemukan." });
+    try {
+      const filePath = join(uploadDir, filename);
+      const fileStat = await stat(filePath);
+      if (!fileStat.isFile()) throw new Error("not-file");
+      response.writeHead(200, { "Content-Type": uploadMimeType(filename), "Cache-Control": "private, max-age=300" });
+      return createReadStream(filePath).pipe(response);
+    } catch {
+      return sendJson(response, 404, { message: "File tidak ditemukan." });
+    }
+  }
+
+  if (request.method === "POST" && pathname === "/api/uploads") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk mengunggah foto." });
+    return new Promise((resolve) => {
+      upload.single("file")(request, response, (error) => {
+        if (error) {
+          sendJson(response, 400, { message: error.message || "Gagal mengunggah foto." });
+        } else if (!request.file) {
+          sendJson(response, 400, { message: "Pilih foto terlebih dahulu." });
+        } else {
+          sendJson(response, 201, { image: `/uploads/${request.file.filename}` });
+        }
+        resolve();
+      });
+    });
+  }
+
+  if (request.method === "POST" && /^\/api\/reports\/[^/]+\/vote$/.test(pathname)) {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk mendukung laporan." });
+    const id = decodeURIComponent(pathname.slice("/api/reports/".length, -"/vote".length));
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query("SELECT data_value FROM app_data WHERE data_key = $1 FOR UPDATE", ["reports"]);
+      const reports = result.rows[0]?.data_value || [];
+      const current = reports.find((item) => String(item.id) === id);
+      if (!current || (current.visibility === "private" && String(current.ownerId) !== principal.username)) {
+        await client.query("ROLLBACK");
+        return sendJson(response, 404, { message: "Laporan tidak ditemukan." });
+      }
+
+      const added = await client.query(
+        "INSERT INTO report_votes (report_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING report_id",
+        [id, principal.id],
+      );
+      const votedByMe = added.rowCount > 0;
+      if (!votedByMe) await client.query("DELETE FROM report_votes WHERE report_id = $1 AND user_id = $2", [id, principal.id]);
+      const count = await client.query("SELECT COUNT(*)::int AS count FROM report_votes WHERE report_id = $1", [id]);
+      const next = { ...current, votes: count.rows[0].count, votesManaged: true };
+      await client.query(
+        "UPDATE app_data SET data_value = $1, updated_at = NOW() WHERE data_key = $2",
+        [JSON.stringify(reports.map((report) => String(report.id) === id ? next : report)), "reports"],
+      );
+      await client.query("COMMIT");
+      if (votedByMe) await awardPoints(principal.id, "vote", id, `Mendukung laporan ${id}`, 50);
+      return sendJson(response, 200, { ...next, votedByMe });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   if (request.method === "PUT" && /^\/api\/reports\/[^/]+$/.test(pathname)) {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const id = decodeURIComponent(pathname.slice("/api/reports/".length));
     const body = await readJson(request);
     const allowedStatuses = ["Masuk", "Diproses", "Selesai", "Ditolak"];
@@ -691,9 +1173,11 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
       return sendJson(response, 400, { message: "Status laporan tidak valid." });
     }
 
+    let previousReport = null;
     const updated = await mutateReports((items) => {
       const current = items.find((item) => String(item.id) === id);
       if (!current) return null;
+      previousReport = current;
 
       const time = new Date().toISOString();
       const officialReply = String(body.officialReply ?? current.officialReply ?? "").trim();
@@ -710,10 +1194,30 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
       };
     });
 
+    if (updated && previousReport && (updated.status !== previousReport.status || updated.officialReply !== previousReport.officialReply)) {
+      const recipient = await pool.query(
+        "SELECT email, fullname FROM users WHERE username = $1 AND email_verified = TRUE AND email_notifications_enabled = TRUE",
+        [updated.ownerId],
+      );
+      const user = recipient.rows[0];
+      if (user?.email) {
+        const title = escapeHtml(updated.title);
+        const status = escapeHtml(updated.status);
+        const reply = escapeHtml(updated.officialReply || "Belum ada tanggapan tambahan.");
+        await sendTransactionalEmail({
+          to: user.email,
+          subject: `Pembaruan aspirasi ${updated.id}: ${updated.status}`,
+          text: `Halo ${user.fullname || "Warga Desa"}, status aspirasi ${updated.id} (${updated.title}) sekarang ${updated.status}. Tanggapan admin: ${updated.officialReply || "Belum ada tanggapan tambahan."}`,
+          html: `<p>Halo ${escapeHtml(user.fullname || "Warga Desa")},</p><p>Ada pembaruan pada aspirasi <strong>${escapeHtml(updated.id)}</strong>: ${title}.</p><p>Status terbaru: <strong>${status}</strong></p><p>Tanggapan admin: ${reply}</p>`,
+        });
+      }
+    }
+
     return updated ? sendJson(response, 200, updated) : sendJson(response, 404, { message: "Laporan tidak ditemukan." });
   }
 
   if (request.method === "POST" && /^\/api\/reports\/[^/]+\/comments$/.test(pathname)) {
+    if (!principal) return sendJson(response, 401, { message: "Masuk ke akun untuk memberi komentar." });
     const id = decodeURIComponent(pathname.slice("/api/reports/".length, -"/comments".length));
     const body = await readJson(request);
     const text = String(body.text || "").trim();
@@ -722,12 +1226,13 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
       return sendJson(response, 400, { message: "Identitas dan isi komentar wajib diisi." });
     }
 
-    const namaPelapor = body.name || "Warga Desa";
-    const identifierUser = body.ownerId || body.name || "guest";
+    const namaPelapor = principal.fullname || principal.nama || "Warga Desa";
+    const identifierUser = principal.username;
 
     const updated = await mutateReports((items) => {
       const current = items.find((item) => String(item.id) === id);
       if (!current) return null;
+      if (current.visibility === "private" && String(current.ownerId) !== principal.username && !isAdmin(principal)) return null;
 
       const commentsList = [...(current.commentsList || [])];
       commentsList.push(
@@ -757,12 +1262,13 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
       try {
         await pool.query(
           "INSERT INTO komentar (aspirasi_id, user_id, isi_komentar) VALUES ($1, $2, $3)",
-          [String(id), String(identifierUser), text],
+          [String(id), String(principal.id), text],
         );
       } catch (err) {}
 
       if (updated.commentsList?.length) {
         const latestComment = updated.commentsList.at(-1);
+        if (!isAdmin(principal)) await awardPoints(principal.id, "report_comment", latestComment.id, `Komentar pada laporan ${updated.id}`, 50);
         await recordNotification({
           title: "Komentar baru pada laporan",
           description: `${latestComment.name} mengomentari ${updated.id}: ${updated.title}`,
@@ -780,10 +1286,12 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
 
   if (request.method === "GET" && pathname === "/api/education") {
     const result = await pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["edukasi"]);
-    return sendJson(response, 200, result.rows[0]?.data_value || []);
+    const items = result.rows[0]?.data_value || [];
+    return sendJson(response, 200, isAdmin(principal) ? items : items.filter((item) => item.status === "Publish"));
   }
 
   if (request.method === "POST" && pathname === "/api/education") {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const body = await readJson(request);
     if (!body.title || !body.desc || !body.content) {
       return sendJson(response, 400, { message: "Judul, ringkasan, dan isi edukasi wajib diisi." });
@@ -819,6 +1327,7 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
   }
 
   if (request.method === "PUT" && /^\/api\/education\/[^/]+$/.test(pathname)) {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const id = decodeURIComponent(pathname.slice("/api/education/".length));
     const updates = await readJson(request);
     const allowed = ["category", "title", "desc", "subtitle", "content", "status", "image", "iconName"];
@@ -854,6 +1363,7 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
   }
 
   if (request.method === "DELETE" && /^\/api\/education\/[^/]+$/.test(pathname)) {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const id = decodeURIComponent(pathname.slice("/api/education/".length));
     const deleted = await mutateEducation((items) => {
       if (!items.some((item) => String(item.id) === id || item.slug === id)) return null;
@@ -868,10 +1378,12 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
 
   if (request.method === "GET" && pathname === "/api/news") {
     const result = await pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["news"]);
-    return sendJson(response, 200, result.rows[0]?.data_value || []);
+    const items = result.rows[0]?.data_value || [];
+    return sendJson(response, 200, isAdmin(principal) ? items : items.filter((item) => ["Tayang", "Publish"].includes(item.status)));
   }
 
   if (request.method === "POST" && pathname === "/api/news") {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const body = await readJson(request);
     if (!body.title || !body.content) {
       return sendJson(response, 400, { message: "Judul dan isi berita wajib diisi." });
@@ -908,6 +1420,7 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
   }
 
   if (request.method === "PUT" && /^\/api\/news\/[^/]+$/.test(pathname)) {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const id = decodeURIComponent(pathname.slice("/api/news/".length));
     const updates = await readJson(request);
     const allowed = ["title", "category", "date", "status", "image", "content"];
@@ -932,6 +1445,7 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
   }
 
   if (request.method === "DELETE" && /^\/api\/news\/[^/]+$/.test(pathname)) {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const id = decodeURIComponent(pathname.slice("/api/news/".length));
     const deleted = await mutateNews((items) => {
       if (!items.some((item) => String(item.id) === id)) return null;
@@ -945,6 +1459,7 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
   }
 
   if (request.method === "POST" && /^\/api\/news\/[^/]+\/comments$/.test(pathname)) {
+    if (!principal) return sendJson(response, 401, { message: "Masuk ke akun untuk memberi komentar." });
     const id = decodeURIComponent(pathname.slice("/api/news/".length, -"/comments".length));
     const body = await readJson(request);
     const text = String(body.text || "").trim();
@@ -953,8 +1468,9 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
       return sendJson(response, 400, { message: "Komentar tidak boleh kosong." });
     }
 
-    const role = body.role === "admin" ? "admin" : "user";
-    const name = String(body.name || (role === "admin" ? "Admin Desa Jarak" : "Warga Desa")).trim();
+    const role = isAdmin(principal) ? "admin" : "user";
+    if (body.replyToId && role !== "admin") return sendJson(response, 403, { message: "Hanya admin yang dapat membalas komentar." });
+    const name = role === "admin" ? "Admin Desa Jarak" : String(principal.fullname || principal.nama || "Warga Desa").trim();
 
     const comment = {
       id: randomBytes(8).toString("hex"),
@@ -993,11 +1509,12 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
       try {
         await pool.query(
           "INSERT INTO komentar (aspirasi_id, user_id, isi_komentar) VALUES ($1, $2, $3)",
-          [String(`Berita-${id}`), String(name), text],
+          [String(`Berita-${id}`), String(principal.id), text],
         );
       } catch (err) {}
 
       if (role === "user") {
+        await awardPoints(principal.id, "news_comment", comment.id, `Komentar pada berita ${updated.title}`, 50);
         await recordNotification({
           title: "Komentar baru pada berita desa",
           description: `${comment.name} mengomentari "${updated.title}".`,
@@ -1016,6 +1533,7 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
   }
 
   if (request.method === "GET" && pathname === "/api/data") {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const result = await pool.query("SELECT data_key, data_value FROM app_data ORDER BY data_key");
     return sendJson(
       response,
@@ -1025,6 +1543,7 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
   }
 
   if (request.method === "PUT" && pathname.startsWith("/api/data/")) {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const key = pathname.slice("/api/data/".length);
     if (!Object.hasOwn(seedData, key)) {
       return sendJson(response, 404, { message: "Dataset tidak ditemukan." });
@@ -1038,6 +1557,11 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
     return sendJson(response, 200, { ok: true, key, value });
   }
 
+  if (request.method === "GET" && pathname === "/api/profile") {
+    const result = await pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["profil"]);
+    return sendJson(response, 200, result.rows[0]?.data_value || initialProfilDesa);
+  }
+
   if (request.method === "POST" && (pathname === "/api/auth/login" || pathname === "/api/auth/register")) {
     const body = await readJson(request);
     const identifier = String(body.username || body.email || "").trim();
@@ -1049,26 +1573,23 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
 
     if (pathname.endsWith("register")) {
       const username = identifier.toLowerCase().replace(/\s+/g, "");
-      const fullname = String(body.fullname || body.nama || identifier).trim();
-      const email = identifier.includes("@") ? identifier : `${username}@desa.id`;
+      const fullname = String(body.fullname || body.nama || "").trim();
+      const email = String(body.email || (identifier.includes("@") ? identifier : `${username}@desa.id`)).trim().toLowerCase();
+      if (!fullname || username.length < 3) {
+        return sendJson(response, 400, { message: "Nama lengkap dan username minimal 3 karakter wajib diisi." });
+      }
+      if (username === "admin") return sendJson(response, 409, { message: "Username tersebut tidak dapat digunakan." });
       const credentials = hashPassword(password);
 
       try {
-      const insertRes = await pool.query(
-  `INSERT INTO users (username, fullname, password_hash, password_salt, nama, email, password, role, poin)
-   VALUES ($1, $2, $3, $4, $2, $5, $6, 'warga', 0)
-   RETURNING *`,
-  [username, fullname, credentials.hash, credentials.salt, email, password],
-);
-        const newUser = insertRes.rows[0];
-
-        return sendJson(response, 201, {
-          success: true,
-          role: "user",
-          name: fullname,
-          userId: username,
-          user: newUser,
-        });
+        const duplicate = await pool.query("SELECT id FROM users WHERE LOWER(email) = LOWER($1) OR LOWER(username) = LOWER($2)", [email, username]);
+        if (duplicate.rows.length) return sendJson(response, 409, { message: "Username atau email sudah terdaftar." });
+        const insertRes = await pool.query(
+          `INSERT INTO users (username, fullname, password_hash, password_salt, nama, email, role, poin)
+           VALUES ($1, $2, $3, $4, $2, $5, 'warga', 0) RETURNING *`,
+          [username, fullname, credentials.hash, credentials.salt, email],
+        );
+        return sendJson(response, 201, { success: true, ...await createSession(insertRes.rows[0]) });
       } catch (error) {
         if (error.code === "23505") {
           return sendJson(response, 409, { message: "Akun/Email sudah terdaftar." });
@@ -1077,10 +1598,12 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
       }
     }
 
+    const normalizedIdentifier = identifier.toLowerCase();
     const result = await pool.query(
-      `SELECT * FROM users 
-       WHERE username = $1 OR email = $1 OR nama = $1 OR username = $2`,
-      [identifier, identifier.toLowerCase()],
+      `SELECT * FROM users
+       WHERE LOWER(username) = $1 OR LOWER(email) = $1 OR LOWER(nama) = $1
+       ORDER BY CASE WHEN LOWER(username) = $1 OR LOWER(email) = $1 THEN 0 ELSE 1 END LIMIT 1`,
+      [normalizedIdentifier],
     );
 
     const user = result.rows[0];
@@ -1090,27 +1613,19 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
       if (user.password_salt && user.password_hash) {
         isAuthenticated = passwordMatches(password, user.password_salt, user.password_hash);
       }
-      if (!isAuthenticated && user.password) {
-        isAuthenticated = user.password === password;
-      }
     }
 
     if (!user || !isAuthenticated) {
       return sendJson(response, 401, { message: "Username/Email atau password salah." });
     }
 
-    const isAdmin = user.role === "admin" || user.username === "admin";
-    return sendJson(response, 200, {
-      success: true,
-      role: isAdmin ? "admin" : "user",
-      name: user.fullname || user.nama,
-      userId: user.username || user.email,
-      user,
-    });
+    return sendJson(response, 200, { success: true, ...await createSession(user) });
   }
 
   if (request.method === "GET" && /^\/api\/users\/[^/]+$/.test(pathname)) {
     const id = decodeURIComponent(pathname.slice("/api/users/".length));
+    if (!principal) return sendJson(response, 401, { message: "Masuk untuk membuka profil." });
+    if (id !== principal.username && id !== principal.email) return sendJson(response, 403, { message: "Anda hanya dapat membuka profil sendiri." });
     try {
       const result = await pool.query(
         "SELECT id, username, fullname, nama, email, no_telepon, alamat, foto, nik FROM users WHERE username = $1 OR email = $1",
@@ -1129,6 +1644,8 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
 
   if (request.method === "PUT" && /^\/api\/users\/[^/]+$/.test(pathname)) {
     const id = decodeURIComponent(pathname.slice("/api/users/".length));
+    if (!principal) return sendJson(response, 401, { message: "Masuk untuk memperbarui profil." });
+    if (id !== principal.username && id !== principal.email) return sendJson(response, 403, { message: "Anda hanya dapat memperbarui profil sendiri." });
     
     return new Promise((resolve, reject) => {
       upload.single("foto")(request, response, async (err) => {
@@ -1180,19 +1697,26 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
 
 const serveStatic = async (response, pathname) => {
   if (pathname.startsWith("/uploads/")) {
-    const filePath = normalize(join(root, pathname));
+    const filename = decodeURIComponent(pathname.slice("/uploads/".length));
+    if (!filename || basename(filename) !== filename) {
+      response.writeHead(404, { "Content-Type": "text/plain" });
+      return response.end("File tidak ditemukan.");
+    }
     try {
+      const [profileOwner, reportsResult] = await Promise.all([
+        pool.query("SELECT id FROM users WHERE foto = $1", [filename]),
+        pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["reports"]),
+      ]);
+      const privateReportImage = (reportsResult.rows[0]?.data_value || []).some(
+        (report) => report.visibility === "private" && report.image === `/uploads/${filename}`,
+      );
+      if (profileOwner.rows.length || privateReportImage) throw new Error("private-file");
+
+      const filePath = join(uploadDir, filename);
       const fileStat = await stat(filePath);
       if (!fileStat.isFile()) throw new Error("not-file");
-      
-      const mime = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".gif": "image/gif"
-      }[extname(filePath).toLowerCase()] || "application/octet-stream";
 
-      response.writeHead(200, { "Content-Type": mime });
+      response.writeHead(200, { "Content-Type": uploadMimeType(filePath) });
       return createReadStream(filePath).pipe(response);
     } catch (e) {
       response.writeHead(404, { "Content-Type": "text/plain" });
@@ -1235,9 +1759,9 @@ const serveStatic = async (response, pathname) => {
 
 const server = http.createServer(async (request, response) => {
   try {
-    const pathname = new URL(request.url, `http://${request.headers.host}`).pathname;
-    if (pathname.startsWith("/api/")) await handleApi(request, response, pathname);
-    else await serveStatic(response, pathname);
+    const url = new URL(request.url, `http://${request.headers.host}`);
+    if (url.pathname.startsWith("/api/")) await handleApi(request, response, url);
+    else await serveStatic(response, url.pathname);
   } catch (error) {
     console.error(error);
     if (!response.headersSent) {

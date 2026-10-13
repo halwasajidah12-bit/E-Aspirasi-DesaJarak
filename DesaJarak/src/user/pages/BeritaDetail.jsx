@@ -4,13 +4,14 @@ import { ArrowLeft, Calendar, MapPin, Send } from "lucide-react";
 import { countNewsComments, mapAdminNews } from "../data/berita";
 import { addNewsComment, getNews } from "../../utils/api.js";
 
-export default function BeritaDetail({ session }) {
+export default function BeritaDetail({ session, onRequireLogin }) {
   const { id } = useParams();
   const navigate = useNavigate();
   const [berita, setBerita] = useState(null);
   const [loading, setLoading] = useState(true);
   const [teks, setTeks] = useState("");
   const [error, setError] = useState("");
+  const [sending, setSending] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -42,6 +43,7 @@ export default function BeritaDetail({ session }) {
     e.preventDefault();
     if (!teks.trim()) return;
     setError("");
+    setSending(true);
     try {
       const updated = await addNewsComment(id, {
         name: session?.name || "Warga Desa",
@@ -52,6 +54,8 @@ export default function BeritaDetail({ session }) {
       setTeks("");
     } catch (requestError) {
       setError(requestError.message || "Komentar gagal dikirim.");
+    } finally {
+      setSending(false);
     }
   };
 
@@ -119,21 +123,36 @@ export default function BeritaDetail({ session }) {
 
           {error && <p className="mt-2 text-xs text-rose-600">{error}</p>}
 
-          <form onSubmit={kirimKomentar} className="flex items-center gap-2 mt-4">
-            <input
-              value={teks}
-              onChange={(e) => setTeks(e.target.value)}
-              placeholder="Tulis komentar..."
-              className="input flex-1"
-            />
-            <button
-              type="submit"
-              aria-label="Kirim komentar"
-              className="h-10 w-10 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center shrink-0 shadow-sm transition active:scale-95"
-            >
-              <Send size={16} />
-            </button>
-          </form>
+          {session?.role === "guest" ? (
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-center">
+              <p className="text-xs text-amber-800">Komentar hanya bisa dikirim dengan akun warga.</p>
+              <button
+                type="button"
+                onClick={onRequireLogin}
+                className="mt-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-500"
+              >
+                Masuk atau Daftar Warga
+              </button>
+            </div>
+          ) : (
+            <form onSubmit={kirimKomentar} className="flex items-center gap-2 mt-4">
+              <input
+                value={teks}
+                onChange={(e) => setTeks(e.target.value)}
+                placeholder="Tulis komentar..."
+                disabled={sending}
+                className="input flex-1"
+              />
+              <button
+                type="submit"
+                disabled={sending || !teks.trim()}
+                aria-label="Kirim komentar"
+                className="h-10 w-10 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center shrink-0 shadow-sm transition active:scale-95 disabled:opacity-50"
+              >
+                <Send size={16} />
+              </button>
+            </form>
+          )}
         </div>
       </div>
     </div>

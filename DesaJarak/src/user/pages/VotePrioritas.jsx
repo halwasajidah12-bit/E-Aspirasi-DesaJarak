@@ -1,15 +1,39 @@
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { Search, Plus, Filter } from "lucide-react";
 import PageHeader from "../components/PageHeader";
 import ReportCard from "../components/ReportCard";
-import { laporanData } from "../data/laporan";
+import { getReports } from "../../utils/api.js";
+import { mapApiReport } from "../data/laporan";
 
 const filters = ["Terbaru", "2 Bulan Terakhir", "Prioritas"];
 
 export default function VotePrioritas() {
   const [active, setActive] = useState("Terbaru");
   const [query, setQuery] = useState("");
+  const [laporanData, setLaporanData] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+
+  useEffect(() => {
+    let mounted = true;
+    const refresh = async () => {
+      try {
+        const items = await getReports("public");
+        if (mounted) {
+          setLaporanData(items.map(mapApiReport));
+          setLoadError("");
+        }
+      } catch (error) {
+        if (mounted) setLoadError(error.message || "Gagal memuat laporan.");
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    };
+    refresh();
+    const interval = setInterval(refresh, 5000);
+    return () => { mounted = false; clearInterval(interval); };
+  }, []);
 
   const laporan = useMemo(() => {
     const q = query.toLowerCase();
@@ -19,10 +43,15 @@ export default function VotePrioritas() {
     if (active === "Prioritas") {
       list = [...list].sort((a, b) => b.dukungan - a.dukungan);
     }
-    // "Terbaru" & "2 Bulan Terakhir" pakai urutan data apa adanya karena
-    // semua contoh laporan dummy ini memang berada dalam 2 bulan terakhir.
+    if (active === "Terbaru") {
+      list = [...list].sort((a, b) => new Date(b.submittedAt || 0) - new Date(a.submittedAt || 0));
+    }
+    if (active === "2 Bulan Terakhir") {
+      const cutoff = Date.now() - 60 * 24 * 60 * 60 * 1000;
+      list = list.filter((report) => !report.submittedAt || new Date(report.submittedAt).getTime() >= cutoff);
+    }
     return list;
-  }, [active, query]);
+  }, [active, query, laporanData]);
 
   return (
     <div className="pb-8">
@@ -69,7 +98,17 @@ export default function VotePrioritas() {
           {laporan.map((r) => (
             <ReportCard key={r.id} report={r} />
           ))}
-          {laporan.length === 0 && (
+          {loading && laporan.length === 0 && (
+            <p role="status" className="md:col-span-full text-center text-xs text-gray-500 font-medium py-8 bg-white rounded-2xl border border-gray-100">
+              Memuat laporan...
+            </p>
+          )}
+          {!loading && loadError && laporan.length === 0 && (
+            <p role="alert" className="md:col-span-full text-center text-xs text-rose-700 font-medium py-8 bg-white rounded-2xl border border-rose-100">
+              Gagal memuat laporan: {loadError}
+            </p>
+          )}
+          {!loading && !loadError && laporan.length === 0 && (
             <p className="md:col-span-full text-center text-xs text-gray-500 font-medium py-8 bg-white rounded-2xl border border-gray-100">
               Tidak ada laporan ditemukan.
             </p>
