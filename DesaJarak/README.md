@@ -42,6 +42,8 @@ npm install
 npm run dev
 ```
 
+Untuk mengarahkan permintaan `/api` dari Vite ke backend yang sudah online saat pengembangan, atur `API_PROXY_TARGET` ke URL backend sebelum menjalankan Vite. Tanpa variabel ini, Vite tidak memakai alamat backend bawaan.
+
 Untuk build produksi:
 
 ```bash
@@ -51,17 +53,10 @@ npm run preview
 
 ### Railway PostgreSQL
 
-Backend membaca `DATABASE_URL` atau variabel koneksi `PG*` dari environment service aplikasi. Atur variabel berikut di Railway; simpan password sebagai variable rahasia dan jangan masukkan nilainya ke source code atau repository:
+Backend membaca `DATABASE_URL` atau variabel koneksi `PG*` dari environment service aplikasi. Di **service aplikasi** Railway, tambahkan `DATABASE_URL` sebagai Variable Reference ke service PostgreSQL. Ganti `Postgres` di bawah dengan nama service PostgreSQL persis seperti yang tampil di project Railway:
 
 ```text
-DATABASE_URL=postgresql://${{PGUSER}}:${{POSTGRES_PASSWORD}}@${{RAILWAY_PRIVATE_DOMAIN}}:5432/${{PGDATABASE}}
-PGHOST=${{RAILWAY_PRIVATE_DOMAIN}}
-PGPORT=5432
-PGUSER=${{POSTGRES_USER}}
-PGPASSWORD=${{POSTGRES_PASSWORD}}
-PGDATABASE=${{POSTGRES_DB}}
-POSTGRES_DB=railway
-POSTGRES_USER=postgres
+DATABASE_URL=postgresql://${{Postgres.POSTGRES_USER}}:${{Postgres.POSTGRES_PASSWORD}}@${{Postgres.RAILWAY_PRIVATE_DOMAIN}}:5432/${{Postgres.POSTGRES_DB}}
 ```
 
-`DATABASE_URL` diprioritaskan jika tersedia. Referensi `${{...}}` harus mengarah ke variable PostgreSQL pada Railway. `PGDATA` dan `SSL_CERT_DAYS` adalah konfigurasi service PostgreSQL dan tidak dibaca oleh backend. Saat pertama kali berjalan, server membuat tabel `users` dan `app_data`, lalu memasukkan data awal dari `src/data/initialData.js` dan `src/user/data/`.
+Pastikan service aplikasi dan PostgreSQL berada di project/environment Railway yang sama dan terhubung melalui private network. `DATABASE_URL` diprioritaskan jika tersedia. Alternatifnya, tambahkan `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, dan `PGDATABASE` ke service aplikasi menggunakan Variable Reference ke service PostgreSQL. Jangan menaruh password langsung di source code atau repository. `PGDATA` dan `SSL_CERT_DAYS` adalah konfigurasi service PostgreSQL dan tidak dibaca oleh backend. Saat pertama kali berjalan, server membuat tabel `users` dan `app_data`, lalu memasukkan data awal dari `src/data/initialData.js` dan `src/user/data/`.
