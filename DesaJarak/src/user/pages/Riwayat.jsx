@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
+import ProtectedImage from "../components/ProtectedImage.jsx";
 import { getReports } from "../../utils/api.js";
 import { mapApiReport } from "../data/laporan";
 
@@ -13,9 +14,9 @@ export default function Riwayat({ session }) {
   useEffect(() => {
     let mounted = true;
     const refreshReports = () => {
-      getReports()
+      getReports('mine')
         .then((items) => {
-          if (mounted) setReports(items.map(mapApiReport).filter((item) => item.ownerId === session?.userId));
+          if (mounted) setReports(items.map(mapApiReport));
         })
         .catch(() => {});
     };
@@ -34,6 +35,7 @@ export default function Riwayat({ session }) {
       <PageHeader title="Riwayat" subtitle="Pantau riwayat Anda" />
 
       <div className="px-4 sm:px-6 mt-3.5">
+        {session?.role === "guest" && <p className="mb-3 rounded-xl bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">Masuk ke akun warga untuk melihat riwayat aspirasi pribadi.</p>}
         <div className="flex gap-2 overflow-x-auto no-scrollbar mb-4">
           {tabs.map((t) => (
             <button
@@ -72,6 +74,16 @@ export default function Riwayat({ session }) {
                   </div>
                 ))}
               </div>
+              {report.foto && (
+                <div className="mt-3 overflow-hidden rounded-xl bg-gray-100">
+                  <ProtectedImage
+                    src={report.foto}
+                    privateAccess={report.visibility === "private"}
+                    alt={`Foto laporan ${report.judul}`}
+                    className="max-h-64 w-full object-contain"
+                  />
+                </div>
+              )}
               <Link to={`/lacak/${String(report.id).replace("#", "")}`} className="mt-3 inline-block text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1 rounded-lg">
                 Buka laporan
               </Link>

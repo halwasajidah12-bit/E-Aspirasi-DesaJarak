@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "E-Aspirasi Desa Jarak",
+  "short_name": "E-Aspirasi",
+  "description": "Layanan aspirasi dan informasi Desa Jarak",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ecfdf5",
+  "theme_color": "#059669",
+  "icons": [
+    {
+      "src": "/notification-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

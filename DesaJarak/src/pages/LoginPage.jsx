@@ -1,6 +1,7 @@
 import { useState } from 'react'
+import GoogleAuthButton from '../components/GoogleAuthButton.jsx'
 
-export default function LoginPage({ onLogin, onGuest, onGoRegister, onGoogleClick }) {
+export default function LoginPage({ onLogin, onGuest, onGoRegister, onGoogleAuth }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
@@ -34,12 +35,12 @@ export default function LoginPage({ onLogin, onGuest, onGoRegister, onGoogleClic
         <div className="bg-white rounded-3xl p-5 shadow-xl border border-emerald-100 space-y-4">
           <form onSubmit={handleSubmit} className="space-y-3 text-xs">
             <div>
-              <label className="block font-semibold text-gray-700 mb-1">Username</label>
+              <label className="block font-semibold text-gray-700 mb-1">Username atau Email</label>
               <input
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 className="w-full p-3 rounded-xl border border-gray-200 bg-gray-50 focus:outline-none focus:border-emerald-500"
-                placeholder="Masukkan username"
+                placeholder="Masukkan username atau email"
                 autoComplete="username"
               />
             </div>
@@ -89,12 +90,7 @@ export default function LoginPage({ onLogin, onGuest, onGoRegister, onGoogleClic
             <span className="flex-1 h-px bg-gray-200"></span>
           </div>
 
-          <button
-            onClick={onGoogleClick}
-            className="w-full flex items-center justify-center gap-2 border border-gray-200 text-gray-700 font-semibold py-2.5 rounded-xl text-xs hover:bg-gray-50 transition active:scale-95"
-          >
-            <i className="fa-brands fa-google text-rose-500"></i> Masuk dengan Google
-          </button>
+          <GoogleAuthButton text="signin_with" onCredential={onGoogleAuth} onError={setError} />
 
           <p className="text-center text-[11px] text-gray-500 pt-1">
             Belum punya akun?{' '}

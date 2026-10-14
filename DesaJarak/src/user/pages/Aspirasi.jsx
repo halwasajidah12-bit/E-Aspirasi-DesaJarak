@@ -5,6 +5,15 @@ import { createReport, getCategories, uploadImage } from "../../utils/api.js";
 
 const steps = ["Lokasi", "Detail", "Foto"];
 
+function getCurrentReportDateTime() {
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, "0");
+  return {
+    tanggal: `${pad(now.getDate())}-${pad(now.getMonth() + 1)}-${now.getFullYear()}`,
+    waktu: `${pad(now.getHours())}.${pad(now.getMinutes())}`,
+  };
+}
+
 function Stepper({ current }) {
   return (
     <div className="flex items-center justify-center gap-2 mt-1">
@@ -32,7 +41,8 @@ function Stepper({ current }) {
 export default function Aspirasi({ session }) {
   const [step, setStep] = useState(0);
   const [dbCategories, setDbCategories] = useState([]);
-  const [form, setForm] = useState({
+  const [form, setForm] = useState(() => ({
+    ...getCurrentReportDateTime(),
     lokasi: "",
     rt: "",
     rw: "",
@@ -41,13 +51,11 @@ export default function Aspirasi({ session }) {
     longitude: "",
     locationAccuracy: "",
     locationSource: "",
-    waktu: "",
-    tanggal: "",
     judul: "",
     kategori: "",
     deskripsi: "",
     visibility: "private",
-  });
+  }));
   const navigate = useNavigate();
   const [submitting, setSubmitting] = useState(false);
   const [photo, setPhoto] = useState(null);
@@ -58,6 +66,27 @@ export default function Aspirasi({ session }) {
   const [scanMessage, setScanMessage] = useState("");
   const [gpsBusy, setGpsBusy] = useState(false);
   const videoRef = useRef(null);
+  const scannerControlsRef = useRef(null);
+  const cameraStreamRef = useRef(null);
+  const scannerAttemptRef = useRef(0);
+  const fileInputRef = useRef(null);
+
+  const stopScanner = useCallback(() => {
+    scannerAttemptRef.current += 1;
+    try {
+      const stopResult = scannerControlsRef.current?.stop();
+      stopResult?.catch?.(() => {});
+    } catch {
+      // Track kamera tetap dihentikan di bawah jika controls gagal ditutup.
+    }
+    scannerControlsRef.current = null;
+    cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
+    cameraStreamRef.current = null;
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.srcObject = null;
+    }
+  }, []);
 
   const captureGpsLocation = useCallback((source) => {
     setScanError("");
@@ -96,6 +125,7 @@ export default function Aspirasi({ session }) {
           longitude,
           locationAccuracy,
           locationSource: source === "qr" ? "qr-gps" : "gps",
+          ...getCurrentReportDateTime(),
         }));
         setScanMessage(`Lokasi GPS berhasil diambil${locationAccuracy !== "" ? ` (akurasi sekitar ${locationAccuracy} m)` : ""}.`);
         setScanError("");
@@ -117,59 +147,84 @@ export default function Aspirasi({ session }) {
     );
   }, []);
 
+  const startScanner = useCallback(async () => {
+    setScanError("");
+    setScanMessage("");
+
+    if (!window.isSecureContext) {
+      setScanError("Kamera hanya dapat digunakan melalui HTTPS atau localhost. Buka web dengan alamat HTTPS di ponsel.");
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setScanError("Kamera tidak tersedia di browser ini. Isi lokasi laporan secara manual.");
+      return;
+    }
+
+    const attemptId = ++scannerAttemptRef.current;
+    setScanActive(true);
+    setScanMessage("Meminta izin kamera. Pilih Izinkan jika browser menanyakannya...");
+
+    try {
+      // Minta kamera langsung dari event klik agar browser mengaitkan izin kamera
+      // dengan tindakan pengguna, terutama pada browser ponsel.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" } },
+        audio: false,
+      });
+      if (attemptId !== scannerAttemptRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+
+      cameraStreamRef.current = stream;
+      if (!videoRef.current) throw new Error("Preview kamera belum siap.");
+
+      const { BrowserQRCodeReader } = await import("@zxing/browser");
+      if (attemptId !== scannerAttemptRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      let decoded = false;
+      const reader = new BrowserQRCodeReader();
+      const controls = await reader.decodeFromStream(stream, videoRef.current, (result) => {
+        if (!result || decoded || attemptId !== scannerAttemptRef.current) return;
+        decoded = true;
+        stopScanner();
+        setScanActive(false);
+        setScanMessage("");
+        captureGpsLocation("qr");
+      });
+
+      if (attemptId !== scannerAttemptRef.current || decoded) {
+        controls.stop();
+        return;
+      }
+      scannerControlsRef.current = controls;
+      setScanMessage("Kamera aktif. Arahkan kamera ke QR code.");
+    } catch (error) {
+      if (attemptId !== scannerAttemptRef.current) return;
+      stopScanner();
+      const message = error.name === "NotAllowedError" || error.name === "PermissionDeniedError"
+        ? "Izin kamera ditolak. Izinkan akses kamera di pengaturan browser, lalu coba lagi."
+        : error.name === "NotFoundError" || error.name === "DevicesNotFoundError"
+          ? "Kamera tidak ditemukan di perangkat ini."
+          : error.name === "NotReadableError" || error.name === "TrackStartError"
+            ? "Kamera sedang dipakai aplikasi lain. Tutup aplikasi kamera lain lalu coba lagi."
+            : "Kamera gagal dibuka. Pastikan web memakai HTTPS, izin kamera aktif, lalu coba lagi.";
+      setScanError(message);
+      setScanMessage("");
+      setScanActive(false);
+    }
+  }, [captureGpsLocation, stopScanner]);
+
   useEffect(() => {
-    if (!scanActive) return undefined;
-    let cancelled = false;
-    let controls;
-    let decoded = false;
-    const startScanner = async () => {
-      if (!window.isSecureContext) {
-        setScanError("Kamera hanya dapat digunakan melalui HTTPS atau localhost.");
-        setScanActive(false);
-        return;
-      }
-      if (!navigator.mediaDevices?.getUserMedia) {
-        setScanError("Kamera tidak tersedia di browser ini. Isi lokasi secara manual.");
-        setScanActive(false);
-        return;
-      }
+    return () => stopScanner();
+  }, [stopScanner]);
 
-      try {
-        const { BrowserQRCodeReader } = await import("@zxing/browser");
-        if (cancelled) return;
-        const reader = new BrowserQRCodeReader();
-        controls = await reader.decodeFromConstraints(
-          { video: { facingMode: { ideal: "environment" } }, audio: false },
-          videoRef.current,
-          (result) => {
-            if (cancelled || !result || decoded) return;
-            decoded = true;
-            controls?.stop();
-            setScanActive(false);
-            captureGpsLocation("qr");
-          },
-        );
-        if (cancelled || decoded) controls.stop();
-      } catch (error) {
-        const message = error.name === "NotAllowedError"
-          ? "Izin kamera ditolak. Izinkan akses kamera di browser, lalu coba lagi."
-          : error.name === "NotFoundError"
-            ? "Kamera tidak ditemukan di perangkat ini."
-            : "Kamera gagal dibuka. Periksa izin kamera atau isi lokasi secara manual.";
-        setScanError(message);
-        setScanActive(false);
-      }
-    };
-
-    startScanner();
-    return () => {
-      cancelled = true;
-      controls?.stop();
-      const stream = videoRef.current?.srcObject;
-      stream?.getTracks().forEach((track) => track.stop());
-      if (videoRef.current) videoRef.current.srcObject = null;
-    };
-  }, [scanActive, captureGpsLocation]);
+  useEffect(() => {
+    if (!photoPreview) return undefined;
+    return () => URL.revokeObjectURL(photoPreview);
+  }, [photoPreview]);
 
   // Tarik data kategori dinamis dari database saat form dibuka
   useEffect(() => {
@@ -227,14 +282,14 @@ export default function Aspirasi({ session }) {
                 <>
                   <video ref={videoRef} muted playsInline className="w-full max-w-sm aspect-video rounded-xl bg-black object-cover" />
                   <p className="text-xs text-gray-600 text-center mt-3">Pindai QR di lokasi laporan. Setelah terbaca, aplikasi mengambil posisi GPS ponsel.</p>
-                  <button type="button" onClick={() => setScanActive(false)} className="mt-3 rounded-lg border border-gray-300 bg-white px-4 py-2 text-xs font-semibold text-gray-700">Tutup kamera</button>
+                  <button type="button" onClick={() => { stopScanner(); setScanActive(false); setScanMessage(""); }} className="mt-3 rounded-lg border border-gray-300 bg-white px-4 py-2 text-xs font-semibold text-gray-700">Tutup kamera</button>
                 </>
               ) : (
                 <>
                   <ScanLine size={40} className="text-emerald-600" />
                   <p className="text-sm font-bold text-gray-800 mt-3">Scan QR CODE</p>
                   <p className="text-xs text-gray-500 text-center mt-1">QR yang sama bisa dipakai di tiap tempat. Lokasi laporan ditentukan dari GPS ponsel saat dipindai.</p>
-                  <button type="button" disabled={gpsBusy} onClick={() => { setScanError(""); setScanMessage(""); setScanActive(true); }} className="mt-3 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-500 disabled:opacity-60">Buka pemindai QR</button>
+                  <button type="button" disabled={gpsBusy} onClick={startScanner} className="mt-3 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-500 disabled:opacity-60">Buka pemindai QR</button>
                 </>
               )}
             </div>
@@ -286,6 +341,13 @@ export default function Aspirasi({ session }) {
                 className="input"
               />
             </Field>
+            <button
+              type="button"
+              onClick={() => setForm((current) => ({ ...current, ...getCurrentReportDateTime() }))}
+              className="mt-2 text-xs font-semibold text-emerald-700 underline underline-offset-2"
+            >
+              Isi waktu dan tanggal sekarang
+            </button>
           </div>
         )}
 
@@ -339,25 +401,48 @@ export default function Aspirasi({ session }) {
           <div className="mt-6">
             <p className="text-center text-xs text-gray-400 mb-4">Foto Laporan</p>
             <p className="text-xs font-semibold text-gray-700 mb-1">Foto Lokasi (Opsional)</p>
-            <label className="border-2 border-dashed border-emerald-200 bg-emerald-50/50 hover:bg-emerald-50 transition rounded-2xl flex flex-col items-center justify-center py-10 cursor-pointer">
-              <Camera size={34} className="text-emerald-600" />
-              <p className="text-sm font-bold mt-3 text-gray-700">ambil foto/pilih dari galeri</p>
-              <p className="text-xs text-gray-400 mt-1">1 foto, maksimal 5 MB</p>
-              <input
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(event) => {
-                  const selected = event.target.files?.[0];
-                  if (selected) {
-                    setPhoto(selected);
-                    setPhotoPreview(URL.createObjectURL(selected));
-                    setSubmitError("");
-                  }
-                }}
-              />
-            </label>
-            {photoPreview && <img src={photoPreview} alt="Foto laporan" className="mt-3 w-full max-h-56 rounded-xl object-cover" />}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif"
+              capture="environment"
+              className="sr-only"
+              aria-label="Pilih foto laporan"
+              onChange={(event) => {
+                const selected = event.target.files?.[0];
+                event.target.value = "";
+                if (!selected) return;
+                const supportedTypes = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+                if (!supportedTypes.includes(selected.type.toLowerCase())) {
+                  setSubmitError("Format foto belum didukung. Pilih foto JPG, PNG, WEBP, atau GIF.");
+                  return;
+                }
+                if (selected.size > 5 * 1024 * 1024) {
+                  setSubmitError("Ukuran foto maksimal 5 MB. Pilih foto yang lebih kecil.");
+                  return;
+                }
+                setPhoto(selected);
+                setPhotoPreview(URL.createObjectURL(selected));
+                setSubmitError("");
+              }}
+            />
+            {photoPreview ? (
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-3">
+                <img src={photoPreview} alt="Pratinjau foto laporan" className="w-full max-h-64 rounded-xl bg-gray-100 object-contain" />
+                <p className="mt-2 break-all text-xs text-gray-600">{photo?.name}</p>
+                <div className="mt-3 flex gap-2">
+                  <button type="button" onClick={() => fileInputRef.current?.click()} className="flex-1 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white">Ganti foto</button>
+                  <button type="button" onClick={() => { setPhoto(null); setPhotoPreview(""); }} className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700">Hapus</button>
+                </div>
+              </div>
+            ) : (
+              <button type="button" onClick={() => fileInputRef.current?.click()} className="w-full border-2 border-dashed border-emerald-200 bg-emerald-50/50 hover:bg-emerald-50 transition rounded-2xl flex flex-col items-center justify-center py-10">
+                <Camera size={34} className="text-emerald-600" />
+                <p className="text-sm font-bold mt-3 text-gray-700">Ambil foto / pilih dari galeri</p>
+                <p className="text-xs text-gray-400 mt-1">JPG, PNG, WEBP, atau GIF · maksimal 5 MB</p>
+              </button>
+            )}
+            <p className="mt-2 text-[11px] text-gray-500">Foto akan diunggah saat Anda menekan “Kirim Laporan”.</p>
 
             <div className="mt-4 space-y-2">
               <p className="text-xs font-semibold text-gray-700">Privasi laporan</p>

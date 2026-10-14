@@ -2,15 +2,9 @@ import { useState, useEffect } from "react";
 import { ArrowLeft } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { profilDesa } from "../data/profilDesa";
-import { getAppData } from "../../utils/api.js";
+import { getVillageProfile } from "../../utils/api.js";
 
 const tabs = ["Informasi Desa", "Perangkat Desa", "Laporan Tahunan"];
-
-const slides = [
-  "/images/jarak.jpg",
-  "/images/jembatan.jpg",
-  "/images/air.jpg",
-];
 
 const fromAdminProfile = (profile) => {
   const rtRw = String(profile.jumlahRtRw || "").match(/\d+/g) || [];
@@ -30,21 +24,11 @@ const fromAdminProfile = (profile) => {
     kk: Number(profile.kk ?? profilDesa.kk),
     produktif: Number(profile.produktif ?? profilDesa.produktif),
     lansia: Number(profile.lansia ?? profilDesa.lansia),
+    image: profile.image?.startsWith("public/") ? `/${profile.image.slice("public/".length)}` : profile.image || profilDesa.image,
+    perangkatDesa: Array.isArray(profile.perangkatDesa) ? profile.perangkatDesa.map((item) => Array.isArray(item) ? item : [item.jabatan || "Perangkat Desa", item.nama || "-"]) : [],
+    laporanTahunan: Array.isArray(profile.laporanTahunan) ? profile.laporanTahunan.map((item) => Array.isArray(item) ? item : [item.label || item.judul || "Laporan", item.nilai || item.value || "-"]) : [],
   };
 };
-
-const perangkat = [
-  ["Kepala Desa", "Sutrisno, S.Sos"],
-  ["Sekretaris Desa", "Wahyu Hidayat"],
-  ["Bendahara Desa", "Siti Aminah"],
-  ["Kasi Pemerintahan", "Agus Salim"],
-];
-
-const laporan = [
-  ["Realisasi Dana Desa 2026", "Rp 1.240.000.000"],
-  ["Serapan Anggaran", "82%"],
-  ["Program Prioritas", "Infrastruktur & UMKM"],
-];
 
 function InfoTable({ title, rows }) {
   return (
@@ -57,6 +41,7 @@ function InfoTable({ title, rows }) {
             <span className="text-xs font-semibold text-gray-800">{value}</span>
           </div>
         ))}
+        {rows.length === 0 && <p className="py-2 text-xs text-gray-500">Data belum tersedia pada profil admin.</p>}
       </div>
     </div>
   );
@@ -66,14 +51,15 @@ export default function InfoDesa() {
   const [tab, setTab] = useState(tabs[0]);
   const [active, setActive] = useState(0);
   const [profil, setProfil] = useState(profilDesa);
+  const slides = [profil.image || "/images/jarak.jpg", "/images/jembatan.jpg", "/images/air.jpg"];
   const navigate = useNavigate();
 
   useEffect(() => {
     let mounted = true;
     const refreshProfile = () => {
-      getAppData()
+      getVillageProfile()
         .then((data) => {
-          if (mounted && data.profil) setProfil(fromAdminProfile(data.profil));
+          if (mounted && data) setProfil(fromAdminProfile(data));
         })
         .catch(() => {});
     };
@@ -191,11 +177,11 @@ export default function InfoDesa() {
         )}
 
         {tab === "Perangkat Desa" && (
-          <InfoTable title="Struktur Perangkat Desa" rows={perangkat} />
+          <InfoTable title="Struktur Perangkat Desa" rows={profil.perangkatDesa || []} />
         )}
 
         {tab === "Laporan Tahunan" && (
-          <InfoTable title="Ringkasan Laporan Tahunan" rows={laporan} />
+          <InfoTable title="Ringkasan Laporan Tahunan" rows={profil.laporanTahunan || []} />
         )}
       </div>
     </div>

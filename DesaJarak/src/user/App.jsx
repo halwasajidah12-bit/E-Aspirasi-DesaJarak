@@ -52,7 +52,7 @@ export default function App({ session, onLogout }) {
         }`}
       >
         {!isChatPage && (
-          <Header onMenuClick={handleMenuClick} collapsed={collapsed} />
+          <Header onMenuClick={handleMenuClick} collapsed={collapsed} session={session} onLogout={onLogout} />
         )}
 
         <main className="flex-1 relative w-full">
@@ -64,14 +64,14 @@ export default function App({ session, onLogout }) {
             <Route path="/lacak/:id" element={<DetailLaporan session={session} />} />
             <Route path="/vote" element={<VotePrioritas />} />
             <Route path="/berita" element={<BeritaDesa />} />
-            <Route path="/berita/:id" element={<BeritaDetail session={session} />} />
+            <Route path="/berita/:id" element={<BeritaDetail session={session} onRequireLogin={onLogout} />} />
             <Route path="/info-desa" element={<InfoDesa />} />
             <Route path="/riwayat" element={<Riwayat session={session} />} />
             <Route path="/akun" element={<Akun session={session} />} /> 
             <Route path="/edukasi" element={<Edukasi />} />
             <Route path="/edukasi/:slug" element={<EdukasiDetail />} />
             <Route path="/reward" element={<DetailReward />} />
-            <Route path="/pengaturan" element={<Pengaturan session={session} onLogout={onLogout} />} />
+            <Route path="/pengaturan" element={<Pengaturan session={session} />} />
             <Route path="/ai-asisten" element={<AiAsisten />} />
           </Routes>
 

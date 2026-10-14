@@ -27,7 +27,7 @@ export default function LacakLaporan() {
 
     // Tarik Laporan
     const refreshReports = () => {
-      getReports()
+      getReports('public')
         .then((items) => {
           if (mounted) setLaporanData(items.map(mapApiReport));
         })

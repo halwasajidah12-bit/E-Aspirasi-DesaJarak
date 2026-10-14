@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, Navigate, Link } from "react-router-dom";
 import { CheckCircle2, Star, Home, Users, FileCheck, Building2, Palette, Store } from "lucide-react";
 import PageHeader from "../components/PageHeader";
-import { initialEducationModules, sortEducationModules } from "../../data/education.js";
+import { sortEducationModules } from "../../data/education.js";
 import { getEducation } from "../../utils/api.js";
 
 const icons = { home: Home, users: Users, "file-check": FileCheck };
@@ -10,7 +10,7 @@ const priorityIcons = { Infrastruktur: Building2, Budaya: Palette, UMKM: Store }
 
 export default function EdukasiDetail() {
   const { slug } = useParams();
-  const [edukasiList, setEdukasiList] = useState(() => sortEducationModules(initialEducationModules));
+  const [edukasiList, setEdukasiList] = useState(() => sortEducationModules([]));
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {

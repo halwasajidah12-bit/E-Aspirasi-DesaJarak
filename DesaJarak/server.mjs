@@ -8,6 +8,7 @@ import pg from "pg";
 import { GoogleGenAI } from "@google/genai";
 import { OAuth2Client } from "google-auth-library";
 import multer from "multer";
+import webPush from "web-push";
 
 import {
   initialProfilDesa,
@@ -242,6 +243,42 @@ const recordNotification = async ({ title, description, icon, color, action, eve
     [title, description, icon, color, JSON.stringify(action), eventKey],
   );
   return result.rows[0];
+};
+
+const recordUserNotification = async ({ userId, title, description, icon, color, action, eventKey }) => {
+  const result = await pool.query(
+    `INSERT INTO user_notifications (user_id, title, description, icon, color, action, event_key)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (user_id, event_key) DO NOTHING
+     RETURNING id, title, description, icon, color, action, created_at, read_at`,
+    [userId, title, description, icon, color, JSON.stringify(action), eventKey],
+  );
+  return result.rows[0];
+};
+
+const pushIsConfigured = () => Boolean(
+  process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY && process.env.VAPID_SUBJECT,
+);
+
+const sendPushToUser = async (userId, { title, body, url = "/riwayat", tag }) => {
+  if (!pushIsConfigured()) return;
+  webPush.setVapidDetails(
+    process.env.VAPID_SUBJECT,
+    process.env.VAPID_PUBLIC_KEY,
+    process.env.VAPID_PRIVATE_KEY,
+  );
+  const result = await pool.query("SELECT id, subscription FROM push_subscriptions WHERE user_id = $1", [userId]);
+  await Promise.all(result.rows.map(async (row) => {
+    try {
+      await webPush.sendNotification(row.subscription, JSON.stringify({ title, body, url, tag }), { TTL: 86400 });
+    } catch (error) {
+      if ([404, 410].includes(error.statusCode)) {
+        await pool.query("DELETE FROM push_subscriptions WHERE id = $1", [row.id]);
+      } else {
+        console.error("Pengiriman push ke perangkat warga gagal:", error.statusCode || error.message);
+      }
+    }
+  }));
 };
 
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>\"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[char]);
@@ -545,6 +582,14 @@ const initDatabase = async () => {
       password_salt TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      endpoint TEXT NOT NULL UNIQUE,
+      subscription JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
     CREATE TABLE IF NOT EXISTS user_sessions (
       token_hash TEXT PRIMARY KEY,
       user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -577,6 +622,19 @@ const initDatabase = async () => {
       event_key TEXT UNIQUE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       read_at TIMESTAMPTZ
+    );
+    CREATE TABLE IF NOT EXISTS user_notifications (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      icon TEXT NOT NULL,
+      color TEXT NOT NULL,
+      action JSONB NOT NULL,
+      event_key TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      read_at TIMESTAMPTZ,
+      UNIQUE (user_id, event_key)
     );
     CREATE TABLE IF NOT EXISTS komentar (
       id BIGSERIAL PRIMARY KEY,
@@ -733,6 +791,78 @@ const handleApi = async (request, response, url) => {
   if (request.method === "GET" && pathname === "/api/auth/session") {
     if (!principal) return sendJson(response, 401, { message: "Sesi tidak berlaku." });
     return sendJson(response, 200, safeUser(principal));
+  }
+
+  if (request.method === "GET" && pathname === "/api/user/push-config") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk mengatur notifikasi HP." });
+    const endpoint = searchParams.get("endpoint") || "";
+    const subscribed = endpoint
+      ? await pool.query("SELECT 1 FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2", [principal.id, endpoint])
+      : { rows: [] };
+    return sendJson(response, 200, {
+      configured: pushIsConfigured(),
+      publicKey: process.env.VAPID_PUBLIC_KEY || "",
+      subscribed: subscribed.rows.length > 0,
+    });
+  }
+
+  if (request.method === "POST" && pathname === "/api/user/push-subscriptions") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk mengaktifkan notifikasi HP." });
+    if (!pushIsConfigured()) return sendJson(response, 503, { message: "Notifikasi HP belum dikonfigurasi pengelola website." });
+    const body = await readJson(request);
+    const subscription = body.subscription;
+    const endpoint = typeof subscription?.endpoint === "string" ? subscription.endpoint : "";
+    if (!endpoint.startsWith("https://") || !subscription?.keys?.p256dh || !subscription?.keys?.auth) {
+      return sendJson(response, 400, { message: "Data langganan notifikasi browser tidak valid." });
+    }
+    await pool.query(
+      `INSERT INTO push_subscriptions (user_id, endpoint, subscription)
+       VALUES ($1, $2, $3::jsonb)
+       ON CONFLICT (endpoint) DO UPDATE SET user_id = EXCLUDED.user_id, subscription = EXCLUDED.subscription, updated_at = NOW()`,
+      [principal.id, endpoint, JSON.stringify(subscription)],
+    );
+    return sendJson(response, 200, { subscribed: true });
+  }
+
+  if (request.method === "DELETE" && pathname === "/api/user/push-subscriptions") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk mengatur notifikasi HP." });
+    const body = await readJson(request);
+    if (typeof body.endpoint !== "string" || !body.endpoint.startsWith("https://")) {
+      return sendJson(response, 400, { message: "Alamat langganan notifikasi tidak valid." });
+    }
+    await pool.query("DELETE FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2", [principal.id, body.endpoint]);
+    return sendJson(response, 200, { subscribed: false });
+  }
+
+  if (request.method === "GET" && pathname === "/api/user/notifications") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk melihat notifikasi." });
+    const [items, unread] = await Promise.all([
+      pool.query(
+        "SELECT id, title, description, icon, color, action, created_at, read_at FROM user_notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100",
+        [principal.id],
+      ),
+      pool.query("SELECT COUNT(*)::int AS count FROM user_notifications WHERE user_id = $1 AND read_at IS NULL", [principal.id]),
+    ]);
+    return sendJson(response, 200, {
+      items: items.rows.map((item) => ({
+        id: item.id,
+        title: item.title,
+        description: item.description,
+        icon: item.icon,
+        color: item.color,
+        action: item.action,
+        createdAt: item.created_at,
+        readAt: item.read_at,
+      })),
+      unreadCount: unread.rows[0]?.count || 0,
+    });
+  }
+
+  if (request.method === "POST" && pathname === "/api/user/notifications/read") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk memperbarui notifikasi." });
+    const readAt = new Date().toISOString();
+    await pool.query("UPDATE user_notifications SET read_at = $1 WHERE user_id = $2 AND read_at IS NULL", [readAt, principal.id]);
+    return sendJson(response, 200, { ok: true, readAt });
   }
 
   if (request.method === "GET" && pathname === "/api/user/email-preferences") {
@@ -1081,6 +1211,26 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
       eventKey: `report-created-${report.id}`,
     });
 
+    try {
+      await recordUserNotification({
+        userId: principal.id,
+        title: "Terima kasih sudah mengirim laporan",
+        description: `Laporan ${report.id} berhasil dikirim dan menunggu tindak lanjut admin.`,
+        icon: "fa-circle-check",
+        color: "bg-emerald-50 text-emerald-600",
+        action: { type: "report", id: report.id },
+        eventKey: `report-submitted-${report.id}`,
+      });
+    } catch (error) {
+      console.error("Gagal menyimpan konfirmasi laporan warga:", error.message);
+    }
+    void sendPushToUser(principal.id, {
+      title: "Laporan berhasil dikirim",
+      body: "Terima kasih sudah menyampaikan laporan. Admin desa akan menindaklanjutinya.",
+      url: "/riwayat",
+      tag: `report-${report.id}`,
+    }).catch((error) => console.error("Gagal mengirim konfirmasi laporan kepada warga:", error.message));
+
     return sendJson(response, 201, report);
   }
 
@@ -1196,11 +1346,39 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
 
     if (updated && previousReport && (updated.status !== previousReport.status || updated.officialReply !== previousReport.officialReply)) {
       const recipient = await pool.query(
-        "SELECT email, fullname FROM users WHERE username = $1 AND email_verified = TRUE AND email_notifications_enabled = TRUE",
+        "SELECT id, email, fullname, email_verified, email_notifications_enabled FROM users WHERE username = $1",
         [updated.ownerId],
       );
       const user = recipient.rows[0];
-      if (user?.email) {
+      const statusChanged = updated.status !== previousReport.status;
+      const replyChanged = updated.officialReply !== previousReport.officialReply;
+      if (user?.id) {
+        const eventTime = updated.statusHistory.at(-1)?.time || new Date().toISOString();
+        try {
+          await recordUserNotification({
+            userId: user.id,
+            title: statusChanged ? "Status laporan diperbarui" : "Admin memberi tanggapan",
+            description: statusChanged
+              ? `Laporan ${updated.id} sekarang berstatus ${updated.status}.${updated.officialReply ? ` Tanggapan admin: ${updated.officialReply}` : ""}`
+              : `Ada tanggapan baru untuk laporan ${updated.id}.${updated.officialReply ? ` Tanggapan admin: ${updated.officialReply}` : ""}`,
+            icon: statusChanged ? "fa-arrows-rotate" : "fa-comment-dots",
+            color: statusChanged ? "bg-blue-50 text-blue-600" : "bg-emerald-50 text-emerald-600",
+            action: { type: "report", id: updated.id },
+            eventKey: `report-update-${updated.id}-${eventTime}`,
+          });
+        } catch (error) {
+          console.error("Gagal menyimpan notifikasi pembaruan laporan warga:", error.message);
+        }
+        void sendPushToUser(user.id, {
+          title: statusChanged ? "Progres laporan diperbarui" : "Ada tanggapan untuk laporan Anda",
+          body: statusChanged
+            ? `Laporan ${updated.id} sekarang berstatus ${updated.status}. Buka E-Aspirasi untuk melihat detail.`
+            : `Admin memberi tanggapan pada laporan ${updated.id}. Buka E-Aspirasi untuk melihat detail.`,
+          url: "/riwayat",
+          tag: `report-${updated.id}`,
+        }).catch((error) => console.error("Gagal mengirim notifikasi pembaruan laporan kepada warga:", error.message));
+      }
+      if (user?.email && user.email_verified && user.email_notifications_enabled) {
         const title = escapeHtml(updated.title);
         const status = escapeHtml(updated.status);
         const reply = escapeHtml(updated.officialReply || "Belum ada tanggapan tambahan.");
@@ -1736,6 +1914,7 @@ const serveStatic = async (response, pathname) => {
         ".html": "text/html",
         ".js": "text/javascript",
         ".css": "text/css",
+        ".webmanifest": "application/manifest+json",
         ".svg": "image/svg+xml",
         ".png": "image/png",
         ".jpg": "image/jpeg",

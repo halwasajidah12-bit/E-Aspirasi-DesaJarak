@@ -1,6 +1,7 @@
 import { useState } from 'react'
+import GoogleAuthButton from '../components/GoogleAuthButton.jsx'
 
-export default function RegisterPage({ onRegister, onGoLogin, onGoogleClick }) {
+export default function RegisterPage({ onRegister, onGoLogin, onGoogleAuth }) {
   const [fullname, setFullname] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -97,12 +98,7 @@ export default function RegisterPage({ onRegister, onGoLogin, onGoogleClick }) {
             <span className="flex-1 h-px bg-gray-200"></span>
           </div>
 
-          <button
-            onClick={onGoogleClick}
-            className="w-full flex items-center justify-center gap-2 border border-gray-200 text-gray-700 font-semibold py-2.5 rounded-xl text-xs hover:bg-gray-50 transition active:scale-95"
-          >
-            <i className="fa-brands fa-google text-rose-500"></i> Daftar dengan Google
-          </button>
+          <GoogleAuthButton text="signup_with" onCredential={onGoogleAuth} onError={setError} />
 
           <p className="text-center text-[11px] text-gray-500 pt-1">
             Sudah punya akun?{' '}

@@ -9,6 +9,7 @@ import {
   Send,
   CheckCheck,
 } from "lucide-react";
+import { askAssistant } from "../../utils/api.js";
 
 const quickQuestions = [
   "Bagaimana caranya melapor?",
@@ -32,33 +33,33 @@ export default function AiAsisten() {
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const endRef = useRef(null);
-  const typingTimeout = useRef(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
 
-  useEffect(() => () => clearTimeout(typingTimeout.current), []);
-
-  const send = (text) => {
-    const value = text ?? input;
-    if (!value.trim()) return;
+  const send = async (text) => {
+    const value = (text ?? input).trim();
+    if (!value) return;
 
     setMessages((m) => [...m, { from: "user", text: value, time: new Date() }]);
     setInput("");
     setIsTyping(true);
-
-    typingTimeout.current = setTimeout(() => {
+    try {
+      const result = await askAssistant(value);
       setIsTyping(false);
       setMessages((m) => [
         ...m,
         {
           from: "bot",
-          text: "Terima kasih atas pertanyaannya. Tim kami akan segera membantu Anda.",
+          text: result.reply,
           time: new Date(),
         },
       ]);
-    }, 1200);
+    } catch (error) {
+      setIsTyping(false);
+      setMessages((m) => [...m, { from: "bot", text: error.message || "Asisten sedang tidak dapat dihubungi. Coba lagi sebentar lagi.", time: new Date() }]);
+    }
   };
 
   return (

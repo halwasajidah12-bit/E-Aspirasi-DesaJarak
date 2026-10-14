@@ -2,13 +2,13 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronRight, Home, Users, FileCheck } from "lucide-react";
 import PageHeader from "../components/PageHeader";
-import { initialEducationModules, sortEducationModules } from "../../data/education.js";
+import { sortEducationModules } from "../../data/education.js";
 import { getEducation } from "../../utils/api.js";
 
 const icons = { home: Home, users: Users, "file-check": FileCheck };
 
 export default function Edukasi() {
-  const [edukasiList, setEdukasiList] = useState(() => sortEducationModules(initialEducationModules));
+  const [edukasiList, setEdukasiList] = useState(() => sortEducationModules([]));
 
   useEffect(() => {
     let mounted = true;

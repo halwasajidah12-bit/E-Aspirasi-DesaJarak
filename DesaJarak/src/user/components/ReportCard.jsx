@@ -1,17 +1,34 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Calendar, MapPin, ThumbsUp } from "lucide-react";
 import { statusColor } from "../data/laporan";
+import { toggleReportVote } from "../../utils/api.js";
 
 export default function ReportCard({ report }) {
-  const [didukung, setDidukung] = useState(false);
+  const [didukung, setDidukung] = useState(Boolean(report.votedByMe));
   const [dukungan, setDukungan] = useState(report.dukungan);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
-  const toggleDukungan = (e) => {
+  useEffect(() => {
+    setDidukung(Boolean(report.votedByMe));
+    setDukungan(report.dukungan);
+  }, [report.votedByMe, report.dukungan]);
+
+  const toggleDukungan = async (e) => {
     e.preventDefault();
     e.stopPropagation();
-    setDukungan((n) => (didukung ? n - 1 : n + 1));
-    setDidukung((v) => !v);
+    setSaving(true);
+    setError("");
+    try {
+      const updated = await toggleReportVote(report.id);
+      setDukungan(updated.votes || 0);
+      setDidukung(Boolean(updated.votedByMe));
+    } catch (requestError) {
+      setError(requestError.message || "Dukungan gagal disimpan.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -60,8 +77,9 @@ export default function ReportCard({ report }) {
         <div className="flex items-center gap-2">
           <button
             onClick={toggleDukungan}
+            disabled={saving}
             aria-label={didukung ? "Batalkan dukungan" : "Dukung laporan"}
-            className={`transition active:scale-90 ${didukung ? "text-emerald-600" : "text-gray-400 hover:text-emerald-600"}`}
+            className={`transition active:scale-90 disabled:opacity-50 ${didukung ? "text-emerald-600" : "text-gray-400 hover:text-emerald-600"}`}
           >
             <ThumbsUp size={16} fill={didukung ? "currentColor" : "none"} />
           </button>
@@ -73,6 +91,7 @@ export default function ReportCard({ report }) {
           </Link>
         </div>
       </div>
+      {error && <p className="text-[10px] text-rose-600">{error}</p>}
     </div>
   );
 }

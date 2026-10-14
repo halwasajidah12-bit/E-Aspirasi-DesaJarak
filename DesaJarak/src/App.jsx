@@ -1,6 +1,14 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { login, register } from './utils/api.js'
+import {
+  authenticateWithGoogle,
+  clearStoredAuthSession,
+  getAuthSession,
+  getStoredAuthSession,
+  login,
+  logout,
+  register,
+} from './utils/api.js'
 import LoginPage from './pages/LoginPage.jsx'
 import RegisterPage from './pages/RegisterPage.jsx'
 import UserApp from './user/App.jsx'
@@ -8,42 +16,72 @@ import AdminDashboard from './AdminDashboard.jsx'
 
 export default function App() {
   const navigate = useNavigate()
-  const [screen, setScreen] = useState('login') // 'login' | 'register' | 'admin' | 'user'
-  const [session, setSession] = useState(null) // { role: 'admin' | 'user' | 'guest', name }
+  const [screen, setScreen] = useState('login')
+  const [session, setSession] = useState(null)
+  const [authLoading, setAuthLoading] = useState(true)
+
+  useEffect(() => {
+    const stored = getStoredAuthSession()
+    if (!stored?.token) {
+      setAuthLoading(false)
+      return
+    }
+    getAuthSession()
+      .then((user) => {
+        setSession({ ...user, token: stored.token })
+        setScreen(user.role === 'admin' ? 'admin' : 'user')
+      })
+      .catch(() => {
+        clearStoredAuthSession()
+        setSession(null)
+      })
+      .finally(() => setAuthLoading(false))
+  }, [])
+
+  const startSession = (result) => {
+    setSession(result)
+    setScreen(result.role === 'admin' ? 'admin' : 'user')
+  }
 
   const handleLogin = async (credentials) => {
     const result = await login(credentials)
-    setSession({ role: result.role, name: result.name, userId: result.userId })
-    setScreen(result.role === 'admin' ? 'admin' : 'user')
+    startSession(result)
     return result
   }
 
   const handleRegister = async (credentials) => {
     const result = await register(credentials)
-    setSession({ role: 'user', name: result.name, userId: result.userId })
-    setScreen('user')
+    startSession(result)
     return result
   }
 
+  const handleGoogleAuth = useCallback(async (credential) => {
+    const result = await authenticateWithGoogle(credential)
+    startSession(result)
+    return result
+  }, [])
+
   const handleGuest = () => {
+    clearStoredAuthSession()
     const userId = globalThis.crypto?.randomUUID?.() || `guest-${Date.now()}-${Math.random().toString(36).slice(2)}`
     setSession({ role: 'guest', name: 'Tamu', userId })
     setScreen('user')
   }
 
-  const handleGoogleClick = () => {
-    // Placeholder only — real Google OAuth will be wired up on the backend later.
-    window.alert('Login/Registrasi dengan Google belum aktif. Fitur ini akan tersambung setelah integrasi backend selesai.')
-  }
-
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try { await logout() } catch { /* local logout still works if the server is offline */ }
+    clearStoredAuthSession()
     setSession(null)
     setScreen('login')
-    navigate('/') // reset citizen app's internal route so a fresh login starts at Home
+    navigate('/')
+  }
+
+  if (authLoading) {
+    return <div className="min-h-dvh flex items-center justify-center text-sm text-gray-500">Memeriksa sesi akun...</div>
   }
 
   if (screen === 'register') {
-    return <RegisterPage onRegister={handleRegister} onGoLogin={() => setScreen('login')} onGoogleClick={handleGoogleClick} />
+    return <RegisterPage onRegister={handleRegister} onGoLogin={() => setScreen('login')} onGoogleAuth={handleGoogleAuth} />
   }
 
   if (screen === 'user' && session) {
@@ -59,7 +97,7 @@ export default function App() {
       onLogin={handleLogin}
       onGuest={handleGuest}
       onGoRegister={() => setScreen('register')}
-      onGoogleClick={handleGoogleClick}
+      onGoogleAuth={handleGoogleAuth}
     />
   )
 }

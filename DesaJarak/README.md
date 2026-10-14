@@ -60,3 +60,13 @@ DATABASE_URL=postgresql://${{Postgres.POSTGRES_USER}}:${{Postgres.POSTGRES_PASSW
 ```
 
 Pastikan service aplikasi dan PostgreSQL berada di project/environment Railway yang sama dan terhubung melalui private network. `DATABASE_URL` diprioritaskan jika tersedia. Alternatifnya, tambahkan `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, dan `PGDATABASE` ke service aplikasi menggunakan Variable Reference ke service PostgreSQL. Jangan menaruh password langsung di source code atau repository. `PGDATA` dan `SSL_CERT_DAYS` adalah konfigurasi service PostgreSQL dan tidak dibaca oleh backend. Saat pertama kali berjalan, server membuat tabel `users` dan `app_data`, lalu memasukkan data awal dari `src/data/initialData.js` dan `src/user/data/`.
+
+### Akun Warga dan Login Google
+
+Pendaftaran username/password membuat akun warga dan menyimpan kata sandi dalam bentuk hash. Login Google menggunakan Google Identity Services; server memverifikasi ID token dan membuat sesi warga yang berlaku 30 hari. Untuk mengaktifkannya:
+
+1. Buat OAuth Client ID bertipe **Web application** di Google Cloud Console.
+2. Daftarkan origin lokal dan domain produksi aplikasi sebagai authorized JavaScript origins.
+3. Isi `GOOGLE_CLIENT_ID` pada environment service backend (contoh formatnya ada di `.env.example`). Client ID bukan rahasia; jangan menaruh client secret di frontend.
+
+Jika `GOOGLE_CLIENT_ID` belum disetel, tombol Google menampilkan bahwa integrasi belum dikonfigurasi. Database menyimpan sesi, data laporan, dan pilihan privasi: laporan pribadi terlihat oleh pelapor dan admin, sedangkan halaman Lacak Laporan hanya menerima laporan publik. Halaman Riwayat mengambil laporan milik akun yang sedang masuk.

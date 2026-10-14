@@ -11,7 +11,8 @@ import {
   MessageCircle,
 } from "lucide-react";
 import { mapApiReport } from "../data/laporan";
-import { addReportComment, getReports } from "../../utils/api.js";
+import { addReportComment, getReports, toggleReportVote } from "../../utils/api.js";
+import ProtectedImage from "../components/ProtectedImage.jsx";
 
 const statusStyle = {
   Selesai: "bg-emerald-100 text-emerald-800",
@@ -28,11 +29,13 @@ export default function DetailLaporan({ session }) {
   const [commentText, setCommentText] = useState("");
   const [commentError, setCommentError] = useState("");
   const [sendingComment, setSendingComment] = useState(false);
+  const [voteError, setVoteError] = useState("");
+  const [sendingVote, setSendingVote] = useState(false);
 
   useEffect(() => {
     let mounted = true;
     const refreshReport = () => {
-      getReports()
+      getReports("accessible")
         .then((items) => {
           const item = items.find((entry) => String(entry.id).replace("#", "") === String(id).replace("#", ""));
           if (mounted) {
@@ -52,14 +55,20 @@ export default function DetailLaporan({ session }) {
     };
   }, [id]);
 
-  const angkaAwal = Number(report?.dukungan) || 0;
+  const didukung = Boolean(report?.votedByMe);
+  const dukungan = Number(report?.dukungan) || 0;
 
-  const [didukung, setDidukung] = useState(false);
-  const [dukungan, setDukungan] = useState(angkaAwal);
-
-  const toggleDukungan = () => {
-    setDukungan((n) => (didukung ? n - 1 : n + 1));
-    setDidukung((v) => !v);
+  const toggleDukungan = async () => {
+    setSendingVote(true);
+    setVoteError("");
+    try {
+      const updated = await toggleReportVote(report.id);
+      setReport(mapApiReport(updated));
+    } catch (error) {
+      setVoteError(error.message || "Dukungan gagal disimpan.");
+    } finally {
+      setSendingVote(false);
+    }
   };
 
   const bagikan = async () => {
@@ -195,8 +204,9 @@ export default function DetailLaporan({ session }) {
 
         <div className="mt-4 rounded-2xl overflow-hidden bg-gray-100 h-44 flex items-center justify-center">
           {report.foto ? (
-            <img
+            <ProtectedImage
               src={report.foto}
+              privateAccess={report.visibility === "private"}
               alt={report.judul}
               className="w-full h-full object-cover"
             />
@@ -218,6 +228,16 @@ export default function DetailLaporan({ session }) {
           <Info label="Tanggal" value={report.tanggal ?? "-"} />
           <Info label="Kategori" value={report.kategori ?? "-"} />
           <Info label="Lokasi" value={report.lokasi ?? "-"} className="col-span-2" />
+          {Number.isFinite(report.coordinates?.latitude) && Number.isFinite(report.coordinates?.longitude) && (
+            <a
+              href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${report.coordinates.latitude},${report.coordinates.longitude}`)}`}
+              target="_blank"
+              rel="noreferrer"
+              className="col-span-2 text-emerald-700 font-semibold underline"
+            >
+              Buka titik GPS di peta{report.locationAccuracy != null ? ` · akurasi ±${report.locationAccuracy} m` : ""}
+            </a>
+          )}
         </div>
 
         <div className="mt-5 rounded-xl border border-emerald-100 bg-emerald-50/60 p-3.5 flex items-center gap-3">
@@ -231,15 +251,18 @@ export default function DetailLaporan({ session }) {
           </div>
           <button
             onClick={toggleDukungan}
-            className={`flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold transition active:scale-95 ${
+            disabled={sendingVote || session?.role === "guest"}
+            className={`flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold transition active:scale-95 disabled:opacity-50 ${
               didukung
                 ? "bg-emerald-600 text-white shadow-sm"
                 : "bg-white text-emerald-700 border border-emerald-200 hover:bg-emerald-50"
             }`}
           >
-            <ThumbsUp size={15} /> {didukung ? "Didukung" : "Dukung"}
+            <ThumbsUp size={15} /> {sendingVote ? "Menyimpan..." : didukung ? "Didukung" : "Dukung"}
           </button>
         </div>
+        {voteError && <p className="mt-2 text-xs text-rose-600">{voteError}</p>}
+        {session?.role === "guest" && <p className="mt-2 text-xs text-gray-500">Masuk ke akun warga untuk mendukung laporan.</p>}
 
         <div className="mt-6">
           <p className="text-sm font-bold text-emerald-900 mb-4">
@@ -289,14 +312,16 @@ export default function DetailLaporan({ session }) {
             {!report.komentar.length && <p className="py-3 text-center text-sm text-gray-400">Belum ada komentar.</p>}
           </div>
           {commentError && <p className="mt-2 text-xs text-rose-600">{commentError}</p>}
+          {session?.role === "guest" && <p className="mt-3 text-xs text-gray-500">Masuk ke akun warga untuk mengirim komentar.</p>}
           <form onSubmit={kirimKomentar} className="mt-3 flex gap-2">
             <input
               value={commentText}
               onChange={(event) => setCommentText(event.target.value)}
               placeholder="Tulis komentar atau masukan warga..."
+              disabled={session?.role === "guest"}
               className="input min-w-0 flex-1"
             />
-            <button disabled={sendingComment || !commentText.trim()} className="shrink-0 rounded-xl bg-emerald-600 hover:bg-emerald-500 px-4 text-xs font-bold text-white shadow-sm transition active:scale-95 disabled:opacity-50">
+            <button disabled={sendingComment || !commentText.trim() || session?.role === "guest"} className="shrink-0 rounded-xl bg-emerald-600 hover:bg-emerald-500 px-4 text-xs font-bold text-white shadow-sm transition active:scale-95 disabled:opacity-50">
               {sendingComment ? "Mengirim..." : "Kirim"}
             </button>
           </form>
