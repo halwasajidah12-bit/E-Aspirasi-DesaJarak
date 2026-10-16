@@ -34,7 +34,12 @@ const jsonRequest = async (path, options = {}) => {
     },
   })
   const body = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(body.message || 'Permintaan ke server gagal.')
+  if (!response.ok) {
+    const error = new Error(body.message || 'Permintaan ke server gagal.')
+    error.status = response.status
+    error.data = body
+    throw error
+  }
   storeAuthSession(body)
   return body
 }
@@ -153,6 +158,8 @@ export const createReport = async (report, owner) => {
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('user-notifications-updated'))
   return created
 }
+
+export const getReportQuota = () => jsonRequest('/reports/quota')
 
 export const uploadImage = async (file) => {
   const token = getStoredAuthSession()?.token

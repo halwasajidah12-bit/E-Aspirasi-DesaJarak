@@ -203,7 +203,10 @@ export default function Header({ onMenuClick, collapsed, session, onLogout }) {
                 return (
                   <button
                     key={notification.id}
-                    onClick={() => { setShowNotifications(false); navigate("/riwayat"); }}
+                    onClick={() => {
+                      setShowNotifications(false);
+                      navigate(notification.action?.type === "home" ? "/" : "/riwayat");
+                    }}
                     className={`block w-full rounded-xl px-3 py-2 text-left hover:bg-emerald-100 ${notification.readAt ? "bg-white" : "bg-emerald-50"}`}
                   >
                     <span className="block text-xs font-semibold text-emerald-800">{notification.title}</span>

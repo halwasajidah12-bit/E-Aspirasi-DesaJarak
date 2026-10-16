@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, ScanLine, Camera } from "lucide-react";
-import { createReport, getCategories, uploadImage } from "../../utils/api.js";
+import { createReport, getCategories, getReportQuota, uploadImage } from "../../utils/api.js";
 
 const steps = ["Lokasi", "Detail", "Foto"];
 
@@ -53,11 +53,15 @@ export default function Aspirasi({ session }) {
     locationSource: "",
     judul: "",
     kategori: "",
+    kategoriLainnya: "",
     deskripsi: "",
     visibility: "private",
   }));
   const navigate = useNavigate();
   const [submitting, setSubmitting] = useState(false);
+  const [reportQuota, setReportQuota] = useState(null);
+  const [quotaLoading, setQuotaLoading] = useState(true);
+  const [quotaModalOpen, setQuotaModalOpen] = useState(false);
   const [photo, setPhoto] = useState(null);
   const [photoPreview, setPhotoPreview] = useState("");
   const [submitError, setSubmitError] = useState("");
@@ -232,18 +236,45 @@ export default function Aspirasi({ session }) {
     getCategories()
       .then((items) => {
         if (mounted) {
-          // Ambil hanya nama_kategori
-          setDbCategories(items.map(item => item.nama_kategori));
+          const names = items.map((item) => item.nama_kategori);
+          if (!names.some((name) => ["lainya", "lainnya"].includes(String(name).trim().toLowerCase()))) {
+            names.push("Lainnya");
+          }
+          setDbCategories(names);
         }
       })
       .catch(() => {
         if (mounted) {
           // Fallback jika API gagal
-          setDbCategories(["Jalan", "Jembatan", "Listrik", "Air", "Drainase", "Lainya"]);
+          setDbCategories(["Jalan", "Jembatan", "Listrik", "Air", "Drainase", "Lainnya"]);
         }
       });
     return () => (mounted = false);
   }, []);
+
+  useEffect(() => {
+    if (!session?.userId || session.role === "guest") {
+      setReportQuota(null);
+      setQuotaLoading(false);
+      return undefined;
+    }
+    let mounted = true;
+    setQuotaLoading(true);
+    getReportQuota()
+      .then((quota) => {
+        if (mounted) {
+          setReportQuota(quota);
+          if (quota.remaining === 0) setQuotaModalOpen(true);
+        }
+      })
+      .catch(() => {
+        if (mounted) setReportQuota(null);
+      })
+      .finally(() => {
+        if (mounted) setQuotaLoading(false);
+      });
+    return () => { mounted = false; };
+  }, [session?.userId, session?.role]);
 
   const update = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
 
@@ -253,6 +284,8 @@ export default function Aspirasi({ session }) {
     "Sampaikan Aspirasi/Pengaduan",
     "Laporkan masalah melalui form",
   ];
+  const quotaExhausted = reportQuota?.remaining === 0;
+  const otherCategorySelected = ["lainnya", "lainya"].includes(form.kategori.trim().toLowerCase());
 
   return (
     <div className="px-4 sm:px-6 py-4 pb-8 space-y-3.5">
@@ -274,6 +307,33 @@ export default function Aspirasi({ session }) {
 
       <div className="bg-white rounded-2xl border border-emerald-100 shadow-sm p-4">
         <Stepper current={step} />
+
+        {session?.role !== "guest" && (
+          <div
+            role="status"
+            className={`mt-4 rounded-xl border px-3 py-2 text-xs ${
+              quotaExhausted
+                ? "border-amber-200 bg-amber-50 text-amber-800"
+                : "border-emerald-100 bg-emerald-50 text-emerald-800"
+            }`}
+          >
+            {reportQuota ? (
+              <>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-semibold">Kuota laporan hari ini</span>
+                  <span className="font-bold">{reportQuota.used}/{reportQuota.limit}</span>
+                </div>
+                <p className="mt-1">
+                  {quotaExhausted
+                    ? "Batas harian tercapai. Kuota tersedia kembali pukul 00.00 WIB."
+                    : `Sisa ${reportQuota.remaining} laporan hari ini.`}
+                </p>
+              </>
+            ) : (
+              <p>{quotaLoading ? "Memeriksa kuota laporan hari ini..." : "Kuota akan diperiksa oleh server saat laporan dikirim."}</p>
+            )}
+          </div>
+        )}
 
         {step === 0 && (
           <div className="mt-6">
@@ -385,6 +445,23 @@ export default function Aspirasi({ session }) {
               ))}
             </div>
 
+            {otherCategorySelected && (
+              <>
+                <Field label="Sebutkan kategori lainnya" required className="mt-4">
+                  <input
+                    value={form.kategoriLainnya}
+                    onChange={update("kategoriLainnya")}
+                    placeholder="Contoh: Keamanan lingkungan"
+                    maxLength={80}
+                    className="input"
+                  />
+                </Field>
+                <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+                  Laporan dengan kategori lainnya hanya dapat dilihat oleh admin desa.
+                </p>
+              </>
+            )}
+
             <Field label="Deskripsi" required className="mt-4">
               <textarea
                 value={form.deskripsi}
@@ -444,17 +521,24 @@ export default function Aspirasi({ session }) {
             )}
             <p className="mt-2 text-[11px] text-gray-500">Foto akan diunggah saat Anda menekan “Kirim Laporan”.</p>
 
-            <div className="mt-4 space-y-2">
-              <p className="text-xs font-semibold text-gray-700">Privasi laporan</p>
-              <label className="flex items-start gap-2 rounded-xl border border-emerald-100 p-3 text-xs">
-                <input type="radio" name="visibility" checked={form.visibility === "private"} onChange={() => setForm((current) => ({ ...current, visibility: "private" }))} />
-                <span><b>Pribadi</b><br /><span className="text-gray-500">Hanya Anda dan admin desa yang dapat melihatnya.</span></span>
-              </label>
-              <label className="flex items-start gap-2 rounded-xl border border-emerald-100 p-3 text-xs">
-                <input type="radio" name="visibility" checked={form.visibility === "public"} onChange={() => setForm((current) => ({ ...current, visibility: "public" }))} />
-                <span><b>Publik</b><br /><span className="text-gray-500">Laporan ditampilkan di menu Lacak Laporan.</span></span>
-              </label>
-            </div>
+            {otherCategorySelected ? (
+              <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                <p className="font-bold">Laporan khusus admin</p>
+                <p className="mt-1">Laporan ini tidak akan ditampilkan kepada warga lain atau di Riwayat warga. Admin desa yang dapat melihat dan menindaklanjutinya.</p>
+              </div>
+            ) : (
+              <div className="mt-4 space-y-2">
+                <p className="text-xs font-semibold text-gray-700">Privasi laporan</p>
+                <label className="flex items-start gap-2 rounded-xl border border-emerald-100 p-3 text-xs">
+                  <input type="radio" name="visibility" checked={form.visibility === "private"} onChange={() => setForm((current) => ({ ...current, visibility: "private" }))} />
+                  <span><b>Pribadi</b><br /><span className="text-gray-500">Hanya Anda dan admin desa yang dapat melihatnya.</span></span>
+                </label>
+                <label className="flex items-start gap-2 rounded-xl border border-emerald-100 p-3 text-xs">
+                  <input type="radio" name="visibility" checked={form.visibility === "public"} onChange={() => setForm((current) => ({ ...current, visibility: "public" }))} />
+                  <span><b>Publik</b><br /><span className="text-gray-500">Laporan ditampilkan di menu Lacak Laporan.</span></span>
+                </label>
+              </div>
+            )}
           </div>
         )}
 
@@ -472,9 +556,15 @@ export default function Aspirasi({ session }) {
           <button
             onClick={async () => {
               setSubmitError("")
+              if (quotaExhausted) {
+                setQuotaModalOpen(true)
+                return
+              }
               if (step === 0 && !form.lokasi.trim()) return setSubmitError("Lokasi laporan wajib diisi.")
-              if (step === 1 && (!form.judul.trim() || !form.kategori || !form.deskripsi.trim())) {
-                return setSubmitError("Judul, kategori, dan deskripsi laporan wajib diisi.")
+              if (step === 1 && (!form.judul.trim() || !form.kategori || !form.deskripsi.trim() || (otherCategorySelected && !form.kategoriLainnya.trim()))) {
+                return setSubmitError(otherCategorySelected
+                  ? "Judul, kategori lainnya, dan deskripsi laporan wajib diisi."
+                  : "Judul, kategori, dan deskripsi laporan wajib diisi.")
               }
               if (step < 2) return setStep((s) => s + 1)
               if (session?.role === "guest") return setSubmitError("Masuk atau buat akun warga sebelum mengirim laporan.")
@@ -482,22 +572,62 @@ export default function Aspirasi({ session }) {
               try {
                 const image = photo ? (await uploadImage(photo)).image : ""
                 await createReport({ ...form, image }, { ownerId: session?.userId, ownerName: session?.name })
-                navigate(form.visibility === "private" ? "/riwayat" : "/lacak")
+                navigate(otherCategorySelected ? "/" : form.visibility === "private" ? "/riwayat" : "/lacak")
               } catch (error) {
-                setSubmitError(error.message || "Laporan gagal dikirim.")
+                if (error.status === 429) {
+                  if (error.data?.quota) setReportQuota(error.data.quota)
+                  setQuotaModalOpen(true)
+                } else {
+                  setSubmitError(error.message || "Laporan gagal dikirim.")
+                }
               } finally {
                 setSubmitting(false)
               }
             }}
             disabled={submitting}
+            aria-haspopup={quotaExhausted ? "dialog" : undefined}
             className={`flex-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white py-3 text-xs font-bold shadow-md transition active:scale-95 disabled:opacity-60 ${
               step === 0 ? "w-full" : ""
             }`}
           >
-            {submitting ? "Mengirim..." : step < 2 ? "Lanjutkan" : "Kirim Laporan"}
+            {submitting ? "Mengirim..." : quotaExhausted ? "Lihat pemberitahuan kuota" : step < 2 ? "Lanjutkan" : "Kirim Laporan"}
           </button>
         </div>
       </div>
+
+      {quotaModalOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-gray-900/50 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setQuotaModalOpen(false)
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="report-quota-title"
+            className="w-full max-w-sm rounded-2xl bg-white p-5 text-center shadow-2xl"
+          >
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-amber-100 text-amber-700">
+              <i className="fa-solid fa-circle-exclamation text-2xl" aria-hidden="true" />
+            </div>
+            <h2 id="report-quota-title" className="mt-4 text-base font-bold text-gray-900">
+              Maaf, kuota laporan hari ini sudah habis
+            </h2>
+            <p className="mt-2 text-sm leading-relaxed text-gray-600">
+              Satu akun warga dapat mengirim maksimal 3 laporan per hari. Silakan coba lagi besok setelah pukul 00.00 WIB.
+            </p>
+            <button
+              type="button"
+              autoFocus
+              onClick={() => setQuotaModalOpen(false)}
+              className="mt-5 w-full rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white hover:bg-emerald-500"
+            >
+              Mengerti
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

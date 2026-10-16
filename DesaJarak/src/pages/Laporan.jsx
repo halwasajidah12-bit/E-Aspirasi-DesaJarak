@@ -165,7 +165,14 @@ export default function Laporan({ reports, onOpenReportDetail, onUpdateReportSta
               <p className="text-xs text-gray-600 leading-relaxed line-clamp-2">{item.description}</p>
 
               <div className="flex items-center justify-between pt-2 border-t border-gray-100 text-xs text-gray-500">
-                <span className="text-[10px] bg-gray-100 text-gray-700 font-semibold px-2 py-0.5 rounded-full">{item.category}</span>
+                <div className="flex flex-wrap items-center gap-1">
+                  <span className="text-[10px] bg-gray-100 text-gray-700 font-semibold px-2 py-0.5 rounded-full">
+                    {item.categoryGroup === 'Lainnya' ? `Lainnya: ${item.category}` : item.category}
+                  </span>
+                  {item.visibility === 'admin' && (
+                    <span className="text-[10px] bg-amber-100 text-amber-800 font-semibold px-2 py-0.5 rounded-full">Admin saja</span>
+                  )}
+                </div>
                 <div className="flex items-center gap-2">
                   <select
                     defaultValue=""

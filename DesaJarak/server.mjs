@@ -544,6 +544,55 @@ const mutateReports = async (mutator) => {
   }
 };
 
+const DAILY_REPORT_LIMIT = 3;
+const REPORT_QUOTA_TIME_ZONE = "Asia/Jakarta";
+
+const reportCalendarDay = (value) => {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: REPORT_QUOTA_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const fields = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  return `${fields.year}-${fields.month}-${fields.day}`;
+};
+
+const countReportsForDay = (reports, user, date = new Date()) => {
+  const day = reportCalendarDay(date);
+  return reports.filter((report) => {
+    const belongsToUser = report.ownerUserId != null
+      ? String(report.ownerUserId) === String(user.id)
+      : String(report.ownerId || "") === String(user.username || "");
+    return belongsToUser && reportCalendarDay(report.submittedAt) === day;
+  }).length;
+};
+
+const reportBelongsToUser = (report, user) => {
+  if (!user) return false;
+  return report.ownerUserId != null
+    ? String(report.ownerUserId) === String(user.id)
+    : String(report.ownerId || "") === String(user.username || "");
+};
+
+const canAccessReport = (report, user) => {
+  if (isAdmin(user)) return true;
+  if (report.visibility === "admin") return false;
+  if (report.visibility === "private") return reportBelongsToUser(report, user);
+  return true;
+};
+
+const isOtherReportCategory = (value) => ["lainnya", "lainya"].includes(String(value || "").trim().toLowerCase());
+
+const reportQuotaPayload = (used) => ({
+  used,
+  limit: DAILY_REPORT_LIMIT,
+  remaining: Math.max(0, DAILY_REPORT_LIMIT - used),
+  timeZone: REPORT_QUOTA_TIME_ZONE,
+});
+
 const awardPoints = async (userId, activityType, referenceId, description, points) => {
   const result = await pool.query(
     `WITH new_activity AS (
@@ -1052,9 +1101,7 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
     const message = String(body.message || "").trim().slice(0, 1000);
     if (!message) return sendJson(response, 400, { message: "Tulis pertanyaan terlebih dahulu." });
     const reportResult = await pool.query("SELECT data_value FROM app_data WHERE data_key = 'reports'");
-    const availableReports = (reportResult.rows[0]?.data_value || []).filter((report) =>
-      report.visibility !== "private" || (principal && String(report.ownerId) === principal.username),
-    );
+    const availableReports = (reportResult.rows[0]?.data_value || []).filter((report) => canAccessReport(report, principal));
     const reportContext = availableReports.map(({ id, title, status, category }) => ({ id, title, status, category }));
     if (ai) {
       try {
@@ -1103,6 +1150,13 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
     });
   }
 
+  if (request.method === "GET" && pathname === "/api/reports/quota") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk melihat kuota laporan." });
+    const result = await pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["reports"]);
+    const used = countReportsForDay(result.rows[0]?.data_value || [], principal);
+    return sendJson(response, 200, reportQuotaPayload(used));
+  }
+
   if (request.method === "GET" && pathname === "/api/reports") {
     const scope = searchParams.get("scope") || (isAdmin(principal) ? "all" : "public");
     if (!["public", "accessible", "mine", "all"].includes(scope)) {
@@ -1124,10 +1178,9 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
     const myVoteIds = new Set(myVotes.rows.map((row) => String(row.report_id)));
     const reports = stored
       .filter((report) => {
-        const isPrivate = report.visibility === "private";
-        if (scope === "mine") return String(report.ownerId) === principal?.username;
-        if (scope === "accessible") return !isPrivate || String(report.ownerId) === principal?.username || isAdmin(principal);
-        if (scope === "public") return !isPrivate;
+        if (scope === "mine") return report.visibility !== "admin" && reportBelongsToUser(report, principal);
+        if (scope === "accessible") return canAccessReport(report, principal);
+        if (scope === "public") return report.visibility === "public" || !report.visibility;
         return true;
       })
       .map((report) => ({
@@ -1140,12 +1193,27 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
   if (request.method === "POST" && pathname === "/api/reports") {
     if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk mengirim aspirasi." });
     const body = await readJson(request);
+    const selectedCategory = String(body.kategori || "").trim();
+    const otherCategory = isOtherReportCategory(selectedCategory);
+    const customCategory = String(body.kategoriLainnya || "").trim();
     if (!body.judul || !body.deskripsi || !body.lokasi) {
       return sendJson(response, 400, {
         message: "Judul, lokasi, deskripsi, dan identitas pelapor wajib diisi.",
       });
     }
-const aiCategory = await classifyReportWithGemini(body.deskripsi);
+    if (!selectedCategory) return sendJson(response, 400, { message: "Kategori laporan wajib dipilih." });
+    if (otherCategory && !customCategory) return sendJson(response, 400, { message: "Tuliskan kategori laporan lainnya." });
+    if (otherCategory && customCategory.length > 80) return sendJson(response, 400, { message: "Kategori tambahan maksimal 80 karakter." });
+    const currentResult = await pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["reports"]);
+    const currentUsed = countReportsForDay(currentResult.rows[0]?.data_value || [], principal);
+    if (currentUsed >= DAILY_REPORT_LIMIT) {
+      return sendJson(response, 429, {
+        message: "Batas laporan hari ini sudah tercapai. Setiap akun warga dapat mengirim maksimal 3 laporan per hari.",
+        quota: reportQuotaPayload(currentUsed),
+      });
+    }
+
+    const aiCategory = await classifyReportWithGemini(body.deskripsi);
     const now = new Date();
     const categoryMap = {
       Jalan: "Jalan & Fasilitas",
@@ -1157,7 +1225,14 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
       Lainnya: "Lainnya",
     };
 
+    let exceededQuota = null;
     const report = await mutateReports((items) => {
+      const used = countReportsForDay(items, principal, now);
+      if (used >= DAILY_REPORT_LIMIT) {
+        exceededQuota = reportQuotaPayload(used);
+        return null;
+      }
+
       const id = `JR-${String(Date.now()).slice(-6)}`;
       const latitude = Number(body.latitude);
       const longitude = Number(body.longitude);
@@ -1167,10 +1242,12 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
         id,
         title: String(body.judul).trim(),
         author: principal.fullname || principal.nama || "Warga Desa",
+        ownerUserId: principal.id,
         ownerId: principal.username,
         ownerName: principal.fullname || principal.nama || "Warga Desa",
-        visibility: body.visibility === "public" ? "public" : "private",
-        category: categoryMap[body.kategori] || body.kategori || "Lainnya",
+        visibility: otherCategory ? "admin" : body.visibility === "public" ? "public" : "private",
+        category: otherCategory ? customCategory : categoryMap[selectedCategory] || selectedCategory || "Lainnya",
+        ...(otherCategory ? { categoryGroup: "Lainnya" } : {}),
         aiCategory: aiCategory || "Belum diklasifikasi" ,
         status: "Masuk",
         urgency: detectReportUrgency({ title: body.judul, description: body.deskripsi }) ? "Tinggi" : "Sedang",
@@ -1200,6 +1277,13 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
       return { reports: [newReport, ...items], value: newReport };
     });
 
+    if (exceededQuota) {
+      return sendJson(response, 429, {
+        message: "Batas laporan hari ini sudah tercapai. Setiap akun warga dapat mengirim maksimal 3 laporan per hari.",
+        quota: exceededQuota,
+      });
+    }
+
     await awardPoints(principal.id, "report", report.id, `Mengirim aspirasi ${report.id}`, 20);
 
     await recordNotification({
@@ -1215,10 +1299,12 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
       await recordUserNotification({
         userId: principal.id,
         title: "Terima kasih sudah mengirim laporan",
-        description: `Laporan ${report.id} berhasil dikirim dan menunggu tindak lanjut admin.`,
+        description: report.visibility === "admin"
+          ? "Laporan kategori lainnya berhasil dikirim secara khusus kepada admin desa."
+          : `Laporan ${report.id} berhasil dikirim dan menunggu tindak lanjut admin.`,
         icon: "fa-circle-check",
         color: "bg-emerald-50 text-emerald-600",
-        action: { type: "report", id: report.id },
+        action: report.visibility === "admin" ? { type: "home" } : { type: "report", id: report.id },
         eventKey: `report-submitted-${report.id}`,
       });
     } catch (error) {
@@ -1227,10 +1313,13 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
     void sendPushToUser(principal.id, {
       title: "Laporan berhasil dikirim",
       body: "Terima kasih sudah menyampaikan laporan. Admin desa akan menindaklanjutinya.",
-      url: "/riwayat",
+      url: report.visibility === "admin" ? "/" : "/riwayat",
       tag: `report-${report.id}`,
     }).catch((error) => console.error("Gagal mengirim konfirmasi laporan kepada warga:", error.message));
 
+    if (report.visibility === "admin") {
+      return sendJson(response, 201, { success: true, visibility: "admin" });
+    }
     return sendJson(response, 201, report);
   }
 
@@ -1285,7 +1374,7 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
       const result = await client.query("SELECT data_value FROM app_data WHERE data_key = $1 FOR UPDATE", ["reports"]);
       const reports = result.rows[0]?.data_value || [];
       const current = reports.find((item) => String(item.id) === id);
-      if (!current || (current.visibility === "private" && String(current.ownerId) !== principal.username)) {
+      if (!current || !canAccessReport(current, principal)) {
         await client.query("ROLLBACK");
         return sendJson(response, 404, { message: "Laporan tidak ditemukan." });
       }
@@ -1352,7 +1441,7 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
       const user = recipient.rows[0];
       const statusChanged = updated.status !== previousReport.status;
       const replyChanged = updated.officialReply !== previousReport.officialReply;
-      if (user?.id) {
+      if (user?.id && updated.visibility !== "admin") {
         const eventTime = updated.statusHistory.at(-1)?.time || new Date().toISOString();
         try {
           await recordUserNotification({
@@ -1378,7 +1467,7 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
           tag: `report-${updated.id}`,
         }).catch((error) => console.error("Gagal mengirim notifikasi pembaruan laporan kepada warga:", error.message));
       }
-      if (user?.email && user.email_verified && user.email_notifications_enabled) {
+      if (updated.visibility !== "admin" && user?.email && user.email_verified && user.email_notifications_enabled) {
         const title = escapeHtml(updated.title);
         const status = escapeHtml(updated.status);
         const reply = escapeHtml(updated.officialReply || "Belum ada tanggapan tambahan.");
@@ -1410,7 +1499,7 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
     const updated = await mutateReports((items) => {
       const current = items.find((item) => String(item.id) === id);
       if (!current) return null;
-      if (current.visibility === "private" && String(current.ownerId) !== principal.username && !isAdmin(principal)) return null;
+      if (!canAccessReport(current, principal)) return null;
 
       const commentsList = [...(current.commentsList || [])];
       commentsList.push(
@@ -1886,7 +1975,7 @@ const serveStatic = async (response, pathname) => {
         pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["reports"]),
       ]);
       const privateReportImage = (reportsResult.rows[0]?.data_value || []).some(
-        (report) => report.visibility === "private" && report.image === `/uploads/${filename}`,
+        (report) => ["private", "admin"].includes(report.visibility) && report.image === `/uploads/${filename}`,
       );
       if (profileOwner.rows.length || privateReportImage) throw new Error("private-file");
 
