@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, ScanLine, Camera } from "lucide-react";
-import { createReport, getCategories } from "../../utils/api.js";
+import { createReport, getCategories, uploadImage } from "../../utils/api.js";
 
 const steps = ["Lokasi", "Detail", "Foto"];
 
@@ -36,18 +36,140 @@ export default function Aspirasi({ session }) {
     lokasi: "",
     rt: "",
     rw: "",
+    infrastructureId: "",
+    latitude: "",
+    longitude: "",
+    locationAccuracy: "",
+    locationSource: "",
     waktu: "",
     tanggal: "",
     judul: "",
     kategori: "",
     deskripsi: "",
+    visibility: "private",
   });
   const navigate = useNavigate();
   const [submitting, setSubmitting] = useState(false);
+  const [photo, setPhoto] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState("");
+  const [submitError, setSubmitError] = useState("");
+  const [scanActive, setScanActive] = useState(false);
+  const [scanError, setScanError] = useState("");
+  const [scanMessage, setScanMessage] = useState("");
+  const [gpsBusy, setGpsBusy] = useState(false);
+  const videoRef = useRef(null);
 
-  const [files, setFiles] = useState([]);
-  const [previews, setPreviews] = useState([]);
-  const fileInputRef = useRef(null);
+  const captureGpsLocation = useCallback((source) => {
+    setScanError("");
+    setScanMessage(source === "qr" ? "QR terbaca. Meminta lokasi GPS perangkat..." : "Meminta lokasi GPS perangkat...");
+    setGpsBusy(true);
+    setForm((current) => ({
+      ...current,
+      ...(current.locationSource ? { lokasi: "" } : {}),
+      latitude: "",
+      longitude: "",
+      locationAccuracy: "",
+      locationSource: "",
+    }));
+
+    if (!navigator.geolocation) {
+      setScanMessage("");
+      setScanError("GPS/lokasi tidak tersedia di browser ini. Isi lokasi laporan secara manual.");
+      setGpsBusy(false);
+      return;
+    }
+    if (!window.isSecureContext) {
+      setScanMessage("");
+      setScanError("GPS hanya dapat digunakan melalui HTTPS atau localhost.");
+      setGpsBusy(false);
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude, accuracy } = position.coords;
+        const locationAccuracy = Number.isFinite(accuracy) ? Math.max(0, Math.round(accuracy)) : "";
+        setForm((current) => ({
+          ...current,
+          lokasi: `GPS ${latitude.toFixed(6)}, ${longitude.toFixed(6)}`,
+          latitude,
+          longitude,
+          locationAccuracy,
+          locationSource: source === "qr" ? "qr-gps" : "gps",
+        }));
+        setScanMessage(`Lokasi GPS berhasil diambil${locationAccuracy !== "" ? ` (akurasi sekitar ${locationAccuracy} m)` : ""}.`);
+        setScanError("");
+        setGpsBusy(false);
+      },
+      (error) => {
+        const message = error.code === error.PERMISSION_DENIED
+          ? "Izin lokasi ditolak. Izinkan akses lokasi di browser, lalu coba lagi."
+          : error.code === error.POSITION_UNAVAILABLE
+            ? "Posisi GPS belum tersedia. Aktifkan lokasi/GPS perangkat dan coba lagi."
+            : error.code === error.TIMEOUT
+              ? "Pengambilan lokasi GPS melewati batas waktu. Coba lagi di area dengan sinyal GPS lebih baik."
+              : "Lokasi GPS gagal diambil. Isi lokasi laporan secara manual.";
+        setScanMessage("");
+        setScanError(message);
+        setGpsBusy(false);
+      },
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 },
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!scanActive) return undefined;
+    let cancelled = false;
+    let controls;
+    let decoded = false;
+    const startScanner = async () => {
+      if (!window.isSecureContext) {
+        setScanError("Kamera hanya dapat digunakan melalui HTTPS atau localhost.");
+        setScanActive(false);
+        return;
+      }
+      if (!navigator.mediaDevices?.getUserMedia) {
+        setScanError("Kamera tidak tersedia di browser ini. Isi lokasi secara manual.");
+        setScanActive(false);
+        return;
+      }
+
+      try {
+        const { BrowserQRCodeReader } = await import("@zxing/browser");
+        if (cancelled) return;
+        const reader = new BrowserQRCodeReader();
+        controls = await reader.decodeFromConstraints(
+          { video: { facingMode: { ideal: "environment" } }, audio: false },
+          videoRef.current,
+          (result) => {
+            if (cancelled || !result || decoded) return;
+            decoded = true;
+            controls?.stop();
+            setScanActive(false);
+            captureGpsLocation("qr");
+          },
+        );
+        if (cancelled || decoded) controls.stop();
+      } catch (error) {
+        const message = error.name === "NotAllowedError"
+          ? "Izin kamera ditolak. Izinkan akses kamera di browser, lalu coba lagi."
+          : error.name === "NotFoundError"
+            ? "Kamera tidak ditemukan di perangkat ini."
+            : "Kamera gagal dibuka. Periksa izin kamera atau isi lokasi secara manual.";
+        setScanError(message);
+        setScanActive(false);
+      }
+    };
+
+    startScanner();
+    return () => {
+      cancelled = true;
+      controls?.stop();
+      const stream = videoRef.current?.srcObject;
+      stream?.getTracks().forEach((track) => track.stop());
+      if (videoRef.current) videoRef.current.srcObject = null;
+    };
+  }, [scanActive, captureGpsLocation]);
 
   // Tarik data kategori dinamis dari database saat form dibuka
   useEffect(() => {
@@ -100,13 +222,34 @@ export default function Aspirasi({ session }) {
 
         {step === 0 && (
           <div className="mt-6">
-            <div className="border-2 border-dashed border-emerald-200 bg-emerald-50/50 rounded-2xl flex flex-col items-center py-8 px-4">
-              <ScanLine size={40} className="text-emerald-600" />
-              <p className="text-sm font-bold text-gray-800 mt-3">Scan QR CODE</p>
-              <p className="text-xs text-gray-500 text-center mt-1">
-                Scan QR di titik infrastruktur
-              </p>
+            <div className="border-2 border-dashed border-emerald-200 bg-emerald-50/50 rounded-2xl flex flex-col items-center py-5 px-4">
+              {scanActive ? (
+                <>
+                  <video ref={videoRef} muted playsInline className="w-full max-w-sm aspect-video rounded-xl bg-black object-cover" />
+                  <p className="text-xs text-gray-600 text-center mt-3">Pindai QR di lokasi laporan. Setelah terbaca, aplikasi mengambil posisi GPS ponsel.</p>
+                  <button type="button" onClick={() => setScanActive(false)} className="mt-3 rounded-lg border border-gray-300 bg-white px-4 py-2 text-xs font-semibold text-gray-700">Tutup kamera</button>
+                </>
+              ) : (
+                <>
+                  <ScanLine size={40} className="text-emerald-600" />
+                  <p className="text-sm font-bold text-gray-800 mt-3">Scan QR CODE</p>
+                  <p className="text-xs text-gray-500 text-center mt-1">QR yang sama bisa dipakai di tiap tempat. Lokasi laporan ditentukan dari GPS ponsel saat dipindai.</p>
+                  <button type="button" disabled={gpsBusy} onClick={() => { setScanError(""); setScanMessage(""); setScanActive(true); }} className="mt-3 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-500 disabled:opacity-60">Buka pemindai QR</button>
+                </>
+              )}
             </div>
+            {scanError && <p role="alert" className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{scanError}</p>}
+            {scanMessage && <p role="status" className="mt-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700">{scanMessage}</p>}
+            {form.latitude !== "" && form.longitude !== "" && (
+              <a
+                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${form.latitude},${form.longitude}`)}`}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-2 block text-center text-xs font-medium text-emerald-700 underline"
+              >
+                Lihat titik GPS di peta{form.locationAccuracy !== "" ? ` · akurasi ±${form.locationAccuracy} m` : ""}
+              </a>
+            )}
 
             <div className="flex items-center gap-3 my-5">
               <span className="h-px bg-gray-200 flex-1" />
@@ -192,57 +335,48 @@ export default function Aspirasi({ session }) {
           </div>
         )}
 
-          {step === 2 && (
-            <div className="mt-6">
-              <p className="text-center text-xs text-gray-400 mb-4">Foto Laporan</p>
-              <p className="text-xs font-semibold text-gray-700 mb-1">Foto Lokasi (Opsional)</p>
-              <label className="border-2 border-dashed border-emerald-200 bg-emerald-50/50 hover:bg-emerald-50 transition rounded-2xl flex flex-col items-center justify-center py-10 cursor-pointer">
-                <Camera size={34} className="text-emerald-600" />
-                <p className="text-sm font-bold mt-3 text-gray-700">ambil foto/pilih dari galeri</p>
-                <p className="text-xs text-gray-400 mt-1">maks 5 foto, 5 MB .jpg .png .gif</p>
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  max={5}
-                  className="hidden"
-                  ref={fileInputRef}
-                  onChange={(e) => {
-                    const newFiles = Array.from(e.target.files || []).slice(0, 5);
-                    const validFiles = newFiles.filter((f) => f.size <= 5 * 1024 * 1024);
-                    setFiles(validFiles);
-                    setPreviews(validFiles.map((f) => URL.createObjectURL(f)));
-                  }}
-                />
-              </label>
+        {step === 2 && (
+          <div className="mt-6">
+            <p className="text-center text-xs text-gray-400 mb-4">Foto Laporan</p>
+            <p className="text-xs font-semibold text-gray-700 mb-1">Foto Lokasi (Opsional)</p>
+            <label className="border-2 border-dashed border-emerald-200 bg-emerald-50/50 hover:bg-emerald-50 transition rounded-2xl flex flex-col items-center justify-center py-10 cursor-pointer">
+              <Camera size={34} className="text-emerald-600" />
+              <p className="text-sm font-bold mt-3 text-gray-700">ambil foto/pilih dari galeri</p>
+              <p className="text-xs text-gray-400 mt-1">1 foto, maksimal 5 MB</p>
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(event) => {
+                  const selected = event.target.files?.[0];
+                  if (selected) {
+                    setPhoto(selected);
+                    setPhotoPreview(URL.createObjectURL(selected));
+                    setSubmitError("");
+                  }
+                }}
+              />
+            </label>
+            {photoPreview && <img src={photoPreview} alt="Foto laporan" className="mt-3 w-full max-h-56 rounded-xl object-cover" />}
 
-              {previews.length > 0 && (
-                <div className="grid grid-cols-5 gap-2 mt-4">
-                  {previews.map((src, i) => (
-                    <div key={i} className="relative aspect-square rounded-xl overflow-hidden border border-gray-200">
-                      <img src={src} alt={`Preview ${i + 1}`} className="w-full h-full object-cover" />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const updated = files.filter((_, idx) => idx !== i);
-                          setFiles(updated);
-                          const newPreviews = updated.map((f) => URL.createObjectURL(f));
-                          previews.forEach((p) => URL.revokeObjectURL(p));
-                          setPreviews(newPreviews);
-                        }}
-                        className="absolute top-0.5 right-0.5 bg-rose-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
+            <div className="mt-4 space-y-2">
+              <p className="text-xs font-semibold text-gray-700">Privasi laporan</p>
+              <label className="flex items-start gap-2 rounded-xl border border-emerald-100 p-3 text-xs">
+                <input type="radio" name="visibility" checked={form.visibility === "private"} onChange={() => setForm((current) => ({ ...current, visibility: "private" }))} />
+                <span><b>Pribadi</b><br /><span className="text-gray-500">Hanya Anda dan admin desa yang dapat melihatnya.</span></span>
+              </label>
+              <label className="flex items-start gap-2 rounded-xl border border-emerald-100 p-3 text-xs">
+                <input type="radio" name="visibility" checked={form.visibility === "public"} onChange={() => setForm((current) => ({ ...current, visibility: "public" }))} />
+                <span><b>Publik</b><br /><span className="text-gray-500">Laporan ditampilkan di menu Lacak Laporan.</span></span>
+              </label>
             </div>
-          )}
+          </div>
+        )}
+
+        {submitError && <p role="alert" className="mt-4 rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 text-xs text-rose-700">{submitError}</p>}
 
         <div className="flex gap-3 mt-6">
-            {step > 0 && (
+          {step > 0 && (
             <button
               onClick={() => setStep((s) => s - 1)}
               className="flex-1 rounded-xl border border-emerald-300 text-emerald-700 hover:bg-emerald-50 py-3 text-xs font-semibold transition active:scale-95"
@@ -252,15 +386,20 @@ export default function Aspirasi({ session }) {
           )}
           <button
             onClick={async () => {
+              setSubmitError("")
+              if (step === 0 && !form.lokasi.trim()) return setSubmitError("Lokasi laporan wajib diisi.")
+              if (step === 1 && (!form.judul.trim() || !form.kategori || !form.deskripsi.trim())) {
+                return setSubmitError("Judul, kategori, dan deskripsi laporan wajib diisi.")
+              }
               if (step < 2) return setStep((s) => s + 1)
+              if (session?.role === "guest") return setSubmitError("Masuk atau buat akun warga sebelum mengirim laporan.")
               setSubmitting(true)
               try {
-                await createReport(form, { ownerId: session?.userId, ownerName: session?.name }, files)
-                files.forEach((f) => URL.revokeObjectURL(URL.createObjectURL(f)));
-                setFiles([]);
-                setPreviews([]);
-                if (fileInputRef.current) fileInputRef.current.value = "";
-                navigate("/lacak")
+                const image = photo ? (await uploadImage(photo)).image : ""
+                await createReport({ ...form, image }, { ownerId: session?.userId, ownerName: session?.name })
+                navigate(form.visibility === "private" ? "/riwayat" : "/lacak")
+              } catch (error) {
+                setSubmitError(error.message || "Laporan gagal dikirim.")
               } finally {
                 setSubmitting(false)
               }

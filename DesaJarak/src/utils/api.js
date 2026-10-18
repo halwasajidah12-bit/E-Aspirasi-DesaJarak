@@ -123,3 +123,22 @@ export const getCategories = async () => {
   if (!res.ok) throw new Error("Failed to fetch categories");
   return await res.json();
 };
+
+export const uploadImage = async (file) => {
+  const formData = new FormData();
+  formData.append("file", file);
+  const response = await fetch("/api/uploads", {
+    method: "POST",
+    body: formData,
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.message || "Gagal mengunggah foto.");
+  return body;
+};
+
+export const getEmailPreferences = () => jsonRequest("/user/email-preferences");
+
+export const updateEmailPreferences = (enabled) => jsonRequest("/user/email-preferences", {
+  method: "PUT",
+  body: JSON.stringify({ enabled }),
+});

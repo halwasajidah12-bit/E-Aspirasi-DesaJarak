@@ -68,6 +68,7 @@ export const laporanData = [
 
 export const mapApiReport = (report) => ({
   id: report.id,
+  submittedAt: report.submittedAt || "",
   kategori: report.category,
   status: report.status,
   judul: report.title,
@@ -77,6 +78,8 @@ export const mapApiReport = (report) => ({
   rt: report.rt || "-",
   rw: report.rw || "-",
   lokasi: report.location || "-",
+  coordinates: report.coordinates || null,
+  locationAccuracy: report.locationAccuracy ?? null,
   dukungan: report.votes || 0,
   foto: report.image || "",
   pelapor: report.author || "Warga Desa",
@@ -86,6 +89,8 @@ export const mapApiReport = (report) => ({
   tanggapan: report.officialReply || "",
   aiSuggestion: report.aiSuggestion || "Belum ada komentar warga.",
   statusHistory: report.statusHistory || [],
+  votedByMe: Boolean(report.votedByMe),
+  visibility: report.visibility === "private" ? "private" : "public",
 })
 
 
