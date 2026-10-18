@@ -362,7 +362,17 @@ const sendJson = (response, status, payload) => {
 const readJson = async (request) => {
   let body = "";
   for await (const chunk of request) body += chunk;
-  return body ? JSON.parse(body) : {};
+  if (!body) return {};
+  try {
+    return JSON.parse(body);
+  } catch (e) {
+    const contentType = request.headers["content-type"] || "";
+    if (contentType.includes("multipart/form-data")) {
+      return {};
+    }
+    console.error("JSON parse error:", e.message);
+    throw new Error("Invalid JSON payload");
+  }
 };
 
 const hashPassword = (password, salt = randomBytes(16).toString("hex")) => ({
