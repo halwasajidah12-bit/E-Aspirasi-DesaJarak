@@ -124,8 +124,12 @@ export const createReport = async (report, owner, files = []) => {
 export const getUserProfile = (id) => jsonRequest(`/users/${encodeURIComponent(id)}`)
 
 export const updateUserProfile = async (id, formData) => {
+  const token = localStorage.getItem('token');
   const response = await fetch(`/api/users/${encodeURIComponent(id)}`, {
     method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${token || ''}`,
+    },
     // perhtaikan cuy ini Tidak memakai headers Content-Type karena browser akan otomatis 
     // mengatur 'multipart/form-data' beserta 'boundary'-nya dari objek FormData
     body: formData,
@@ -135,16 +139,25 @@ export const updateUserProfile = async (id, formData) => {
   return body
 }
 export const getCategories = async () => {
-  const res = await fetch("/api/categories");
+  const token = localStorage.getItem('token');
+  const res = await fetch("/api/categories", {
+    headers: {
+      Authorization: `Bearer ${token || ''}`,
+    },
+  });
   if (!res.ok) throw new Error("Failed to fetch categories");
   return await res.json();
 };
 
 export const uploadImage = async (file) => {
+  const token = localStorage.getItem('token');
   const formData = new FormData();
   formData.append("file", file);
   const response = await fetch("/api/uploads", {
     method: "POST",
+    headers: {
+      Authorization: `Bearer ${token || ''}`,
+    },
     body: formData,
   });
   const body = await response.json().catch(() => ({}));
