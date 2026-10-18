@@ -1,7 +1,19 @@
-const jsonRequest = async (path, options = {}) => {
+export const apiConfig = {
+  token: () => localStorage.getItem('token'),
+  headers: {
+    Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
+  },
+};
+
+export const jsonRequest = async (path, options = {}) => {
+  const token = localStorage.getItem('token');
   const response = await fetch(`/api${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers || {})
+    },
+    ...options
   })
   const body = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(body.message || 'Permintaan ke server gagal.')
@@ -96,8 +108,12 @@ export const createReport = async (report, owner, files = []) => {
   // Kirim file foto (maks 5)
   files.forEach((file, i) => formData.append(`images`, file));
 
+  const token = localStorage.getItem('token');
   const response = await fetch('/api/reports', {
     method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token || ''}`,
+    },
     body: formData,
   });
   const body = await response.json().catch(() => ({}));
