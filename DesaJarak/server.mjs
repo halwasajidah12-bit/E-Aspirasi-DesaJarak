@@ -941,9 +941,7 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
     const message = String(body.message || "").trim().slice(0, 1000);
     if (!message) return sendJson(response, 400, { message: "Tulis pertanyaan terlebih dahulu." });
     const reportResult = await pool.query("SELECT data_value FROM app_data WHERE data_key = 'reports'");
-    const availableReports = (reportResult.rows[0]?.data_value || []).filter((report) =>
-      report.visibility !== "private" || (principal && String(report.ownerId) === principal.username),
-    );
+     const availableReports = reportResult.rows[0]?.data_value || [];
     const reportContext = availableReports.map(({ id, title, status, category }) => ({ id, title, status, category }));
     if (ai) {
       try {
@@ -1012,13 +1010,6 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
       : { rows: [] };
     const myVoteIds = new Set(myVotes.rows.map((row) => String(row.report_id)));
     const reports = stored
-      .filter((report) => {
-        const isPrivate = report.visibility === "private";
-        if (scope === "mine") return String(report.ownerId) === principal?.username;
-        if (scope === "accessible") return !isPrivate || String(report.ownerId) === principal?.username || isAdmin(principal);
-        if (scope === "public") return !isPrivate;
-        return true;
-      })
       .map((report) => ({
         ...report,
         votes: report.votesManaged ? (voteCounts.get(String(report.id)) || 0) : (voteCounts.get(String(report.id)) || report.votes || 0),
@@ -1058,7 +1049,7 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
         author: principal.fullname || principal.nama || "Warga Desa",
         ownerId: principal.username,
         ownerName: principal.fullname || principal.nama || "Warga Desa",
-        visibility: body.visibility === "public" ? "public" : "private",
+        visibility: "public",
         category: categoryMap[body.kategori] || body.kategori || "Lainnya",
         aiCategory: aiCategory || "Belum diklasifikasi" ,
         status: "Masuk",
@@ -1103,32 +1094,6 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
     return sendJson(response, 201, report);
   }
 
-  if (request.method === "GET" && /^\/api\/uploads\/[^/]+$/.test(pathname)) {
-    if (!principal) return sendJson(response, 401, { message: "Masuk untuk membuka gambar pribadi." });
-    const filename = decodeURIComponent(pathname.slice("/api/uploads/".length));
-    if (basename(filename) !== filename) return sendJson(response, 404, { message: "File tidak ditemukan." });
-    const [profileOwner, reportsResult] = await Promise.all([
-      pool.query("SELECT username FROM users WHERE foto = $1", [filename]),
-      pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["reports"]),
-    ]);
-    const reportOwners = (reportsResult.rows[0]?.data_value || [])
-      .filter((report) => report.visibility === "private" && report.image === `/uploads/${filename}`)
-      .map((report) => String(report.ownerId));
-    const allowed = isAdmin(principal) ||
-      profileOwner.rows.some((row) => row.username === principal.username) ||
-      reportOwners.includes(principal.username);
-    if (!allowed) return sendJson(response, 404, { message: "File tidak ditemukan." });
-    try {
-      const filePath = join(uploadDir, filename);
-      const fileStat = await stat(filePath);
-      if (!fileStat.isFile()) throw new Error("not-file");
-      response.writeHead(200, { "Content-Type": uploadMimeType(filename), "Cache-Control": "private, max-age=300" });
-      return createReadStream(filePath).pipe(response);
-    } catch {
-      return sendJson(response, 404, { message: "File tidak ditemukan." });
-    }
-  }
-
   if (request.method === "POST" && pathname === "/api/uploads") {
     if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk mengunggah foto." });
     return new Promise((resolve) => {
@@ -1154,7 +1119,7 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
       const result = await client.query("SELECT data_value FROM app_data WHERE data_key = $1 FOR UPDATE", ["reports"]);
       const reports = result.rows[0]?.data_value || [];
       const current = reports.find((item) => String(item.id) === id);
-      if (!current || (current.visibility === "private" && String(current.ownerId) !== principal.username)) {
+      if (!current) {
         await client.query("ROLLBACK");
         return sendJson(response, 404, { message: "Laporan tidak ditemukan." });
       }
@@ -1251,7 +1216,6 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
     const updated = await mutateReports((items) => {
       const current = items.find((item) => String(item.id) === id);
       if (!current) return null;
-      if (current.visibility === "private" && String(current.ownerId) !== principal.username && !isAdmin(principal)) return null;
 
       const commentsList = [...(current.commentsList || [])];
       commentsList.push(
@@ -1722,15 +1686,6 @@ const serveStatic = async (response, pathname) => {
       return response.end("File tidak ditemukan.");
     }
     try {
-      const [profileOwner, reportsResult] = await Promise.all([
-        pool.query("SELECT id FROM users WHERE foto = $1", [filename]),
-        pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["reports"]),
-      ]);
-      const privateReportImage = (reportsResult.rows[0]?.data_value || []).some(
-        (report) => report.visibility === "private" && report.image === `/uploads/${filename}`,
-      );
-      if (profileOwner.rows.length || privateReportImage) throw new Error("private-file");
-
       const filePath = join(uploadDir, filename);
       const fileStat = await stat(filePath);
       if (!fileStat.isFile()) throw new Error("not-file");

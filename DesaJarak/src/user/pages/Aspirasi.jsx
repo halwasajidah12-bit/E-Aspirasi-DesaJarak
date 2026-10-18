@@ -46,7 +46,6 @@ export default function Aspirasi({ session }) {
     judul: "",
     kategori: "",
     deskripsi: "",
-    visibility: "private",
   });
   const navigate = useNavigate();
   const [submitting, setSubmitting] = useState(false);
@@ -359,59 +358,45 @@ export default function Aspirasi({ session }) {
             </label>
             {photoPreview && <img src={photoPreview} alt="Foto laporan" className="mt-3 w-full max-h-56 rounded-xl object-cover" />}
 
-            <div className="mt-4 space-y-2">
-              <p className="text-xs font-semibold text-gray-700">Privasi laporan</p>
-              <label className="flex items-start gap-2 rounded-xl border border-emerald-100 p-3 text-xs">
-                <input type="radio" name="visibility" checked={form.visibility === "private"} onChange={() => setForm((current) => ({ ...current, visibility: "private" }))} />
-                <span><b>Pribadi</b><br /><span className="text-gray-500">Hanya Anda dan admin desa yang dapat melihatnya.</span></span>
-              </label>
-              <label className="flex items-start gap-2 rounded-xl border border-emerald-100 p-3 text-xs">
-                <input type="radio" name="visibility" checked={form.visibility === "public"} onChange={() => setForm((current) => ({ ...current, visibility: "public" }))} />
-                <span><b>Publik</b><br /><span className="text-gray-500">Laporan ditampilkan di menu Lacak Laporan.</span></span>
-              </label>
+            {submitError && <p role="alert" className="mt-4 rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 text-xs text-rose-700">{submitError}</p>}
+
+            <div className="flex gap-3 mt-6">
+              {step > 0 && (
+                <button
+                  onClick={() => setStep((s) => s - 1)}
+                  className="flex-1 rounded-xl border border-emerald-300 text-emerald-700 hover:bg-emerald-50 py-3 text-xs font-semibold transition active:scale-95"
+                >
+                  Kembali
+                </button>
+              )}
+              <button
+                onClick={async () => {
+                  setSubmitError("")
+                  if (step === 0 && !form.lokasi.trim()) return setSubmitError("Lokasi laporan wajib diisi.")
+                  if (step === 1 && (!form.judul.trim() || !form.kategori || !form.deskripsi.trim())) {
+                    return setSubmitError("Judul, kategori, dan deskripsi laporan wajib diisi.")
+                  }
+                  if (step < 2) return setStep((s) => s + 1)
+                  if (session?.role === "guest") return setSubmitError("Masuk atau buat akun warga sebelum mengirim laporan.")
+                  setSubmitting(true)
+                  try {
+                    const image = photo ? (await uploadImage(photo)).image : ""
+                    await createReport({ ...form, image }, { ownerId: session?.userId, ownerName: session?.name })
+                    navigate("/lacak")
+                  } catch (error) {
+                    setSubmitError(error.message || "Laporan gagal dikirim.")
+                  } finally {
+                    setSubmitting(false)
+                  }
+                }}
+                disabled={submitting}
+                className={`flex-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white py-3 text-xs font-bold shadow-md transition active:scale-95 disabled:opacity-60 ${
+                  step === 0 ? "w-full" : ""
+                }`}
+              >
+                {submitting ? "Mengirim..." : step < 2 ? "Lanjutkan" : "Kirim Laporan"}
+              </button>
             </div>
-          </div>
-        )}
-
-        {submitError && <p role="alert" className="mt-4 rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 text-xs text-rose-700">{submitError}</p>}
-
-        <div className="flex gap-3 mt-6">
-          {step > 0 && (
-            <button
-              onClick={() => setStep((s) => s - 1)}
-              className="flex-1 rounded-xl border border-emerald-300 text-emerald-700 hover:bg-emerald-50 py-3 text-xs font-semibold transition active:scale-95"
-            >
-              Kembali
-            </button>
-          )}
-          <button
-            onClick={async () => {
-              setSubmitError("")
-              if (step === 0 && !form.lokasi.trim()) return setSubmitError("Lokasi laporan wajib diisi.")
-              if (step === 1 && (!form.judul.trim() || !form.kategori || !form.deskripsi.trim())) {
-                return setSubmitError("Judul, kategori, dan deskripsi laporan wajib diisi.")
-              }
-              if (step < 2) return setStep((s) => s + 1)
-              if (session?.role === "guest") return setSubmitError("Masuk atau buat akun warga sebelum mengirim laporan.")
-              setSubmitting(true)
-              try {
-                const image = photo ? (await uploadImage(photo)).image : ""
-                await createReport({ ...form, image }, { ownerId: session?.userId, ownerName: session?.name })
-                navigate(form.visibility === "private" ? "/riwayat" : "/lacak")
-              } catch (error) {
-                setSubmitError(error.message || "Laporan gagal dikirim.")
-              } finally {
-                setSubmitting(false)
-              }
-            }}
-            disabled={submitting}
-            className={`flex-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white py-3 text-xs font-bold shadow-md transition active:scale-95 disabled:opacity-60 ${
-              step === 0 ? "w-full" : ""
-            }`}
-          >
-            {submitting ? "Mengirim..." : step < 2 ? "Lanjutkan" : "Kirim Laporan"}
-          </button>
-        </div>
       </div>
     </div>
   );

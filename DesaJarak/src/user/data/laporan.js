@@ -90,7 +90,6 @@ export const mapApiReport = (report) => ({
   aiSuggestion: report.aiSuggestion || "Belum ada komentar warga.",
   statusHistory: report.statusHistory || [],
   votedByMe: Boolean(report.votedByMe),
-  visibility: report.visibility === "private" ? "private" : "public",
 })
 
 
