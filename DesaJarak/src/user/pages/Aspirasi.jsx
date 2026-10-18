@@ -3,60 +3,52 @@ import { useNavigate } from "react-router-dom";
 import { ArrowLeft, ScanLine, Camera } from "lucide-react";
 import { createReport, getCategories, uploadImage } from "../../utils/api.js";
 
-const steps = ["Lokasi", "Detail", "Foto"];
-
-function Stepper({ current }) {
-  return (
-    <div className="flex items-center justify-center gap-2 mt-1">
-      {steps.map((label, i) => (
-        <div key={label} className="flex items-center gap-2">
-          <div className="flex items-center gap-1.5">
-            <span
-              className={`h-6 w-6 rounded-full flex items-center justify-center text-[11px] font-bold ${
-                i <= current ? "bg-emerald-600 text-white" : "bg-gray-200 text-gray-400"
-              }`}
-            >
-              {i + 1}
-            </span>
-            <span className={`text-xs font-medium ${i <= current ? "text-emerald-700" : "text-gray-400"}`}>
-              {label}
-            </span>
-          </div>
-          {i < steps.length - 1 && <span className="w-6 h-px bg-gray-300" />}
+const Stepper = ({ current }) => (
+  <div className="flex items-center justify-center gap-2 mb-5">
+    {["Lokasi", "Detail", "Foto"].map((label, idx) => (
+      <div key={label} className="flex items-center gap-2">
+        <div
+          className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold transition ${
+            idx === current ? "bg-emerald-600 text-white" : idx < current ? "bg-emerald-100 text-emerald-600" : "bg-gray-100 text-gray-400"
+          }`}
+        >
+          {idx + 1}
         </div>
-      ))}
-    </div>
-  );
-}
+        <span className="text-xs font-medium text-gray-600">{label}</span>
+        {idx < 2 && <span className="w-8 h-px bg-gray-200" />}
+      </div>
+    ))}
+  </div>
+);
 
-export default function Aspirasi({ session }) {
+function Aspirasi({ session }) {
   const [step, setStep] = useState(0);
-  const [dbCategories, setDbCategories] = useState([]);
   const [form, setForm] = useState({
     lokasi: "",
     rt: "",
     rw: "",
-    infrastructureId: "",
-    latitude: "",
-    longitude: "",
-    locationAccuracy: "",
-    locationSource: "",
     waktu: "",
     tanggal: "",
     judul: "",
     kategori: "",
     deskripsi: "",
+    infrastructureId: "",
+    latitude: "",
+    longitude: "",
+    locationAccuracy: "",
+    locationSource: "",
   });
-  const navigate = useNavigate();
-  const [submitting, setSubmitting] = useState(false);
+  const [dbCategories, setDbCategories] = useState([]);
   const [photo, setPhoto] = useState(null);
   const [photoPreview, setPhotoPreview] = useState("");
   const [submitError, setSubmitError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const [scanActive, setScanActive] = useState(false);
   const [scanError, setScanError] = useState("");
   const [scanMessage, setScanMessage] = useState("");
   const [gpsBusy, setGpsBusy] = useState(false);
   const videoRef = useRef(null);
+  const navigate = useNavigate();
 
   const captureGpsLocation = useCallback((source) => {
     setScanError("");
@@ -132,23 +124,29 @@ export default function Aspirasi({ session }) {
         setScanActive(false);
         return;
       }
-
       try {
-        const { BrowserQRCodeReader } = await import("@zxing/browser");
-        if (cancelled) return;
-        const reader = new BrowserQRCodeReader();
-        controls = await reader.decodeFromConstraints(
-          { video: { facingMode: { ideal: "environment" } }, audio: false },
-          videoRef.current,
-          (result) => {
-            if (cancelled || !result || decoded) return;
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        videoRef.current.srcObject = stream;
+        const codeReader = new window.ZXing.BrowserQRCodeReader();
+        controls = await codeReader.decodeFromVideoDevice(null, videoRef.current, (result, err) => {
+          if (result && !decoded) {
             decoded = true;
-            controls?.stop();
-            setScanActive(false);
+            controls.stop();
+            stream.getTracks().forEach((track) => track.stop());
+            if (videoRef.current) videoRef.current.srcObject = null;
             captureGpsLocation("qr");
-          },
-        );
-        if (cancelled || decoded) controls.stop();
+            setScanActive(false);
+          }
+          if (err && err.name !== "NotFoundException") {
+            setScanError("Gagal memindai QR. Coba lagi.");
+            setScanActive(false);
+            stream.getTracks().forEach((track) => track.stop());
+          }
+        });
       } catch (error) {
         const message = error.name === "NotAllowedError"
           ? "Izin kamera ditolak. Izinkan akses kamera di browser, lalu coba lagi."
@@ -176,13 +174,11 @@ export default function Aspirasi({ session }) {
     getCategories()
       .then((items) => {
         if (mounted) {
-          // Ambil hanya nama_kategori
-          setDbCategories(items.map(item => item.nama_kategori));
+          setDbCategories(items.map((item) => item.nama_kategori));
         }
       })
       .catch(() => {
         if (mounted) {
-          // Fallback jika API gagal
           setDbCategories(["Jalan", "Jembatan", "Listrik", "Air", "Drainase", "Lainya"]);
         }
       });
@@ -190,6 +186,21 @@ export default function Aspirasi({ session }) {
   }, []);
 
   const update = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+  const [formErrors, setFormErrors] = useState({});
+  const [showErrors, setShowErrors] = useState(false);
+  const validateStep = (stepNum) => {
+    const errors = {};
+    if (stepNum === 0) {
+      if (!form.lokasi) errors.lokasi = "Lokasi laporan wajib diisi.";
+    }
+    if (stepNum === 1) {
+      if (!form.judul) errors.judul = "Judul laporan wajib diisi.";
+      if (!form.kategori) errors.kategori = "Kategori laporan wajib dipilih.";
+      if (!form.deskripsi) errors.deskripsi = "Deskripsi laporan wajib diisi.";
+    }
+    setFormErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
 
   const titleByStep = ["Aspirasi", "Aspirasi", "Buat Pengaduan"];
   const subtitleByStep = [
@@ -357,46 +368,48 @@ export default function Aspirasi({ session }) {
               />
             </label>
             {photoPreview && <img src={photoPreview} alt="Foto laporan" className="mt-3 w-full max-h-56 rounded-xl object-cover" />}
+          </div>
+        )}
 
-            {submitError && <p role="alert" className="mt-4 rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 text-xs text-rose-700">{submitError}</p>}
+        {submitError && <p role="alert" className="mt-4 rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 text-xs text-rose-700">{submitError}</p>}
 
-            <div className="flex gap-3 mt-6">
-              {step > 0 && (
-                <button
-                  onClick={() => setStep((s) => s - 1)}
-                  className="flex-1 rounded-xl border border-emerald-300 text-emerald-700 hover:bg-emerald-50 py-3 text-xs font-semibold transition active:scale-95"
-                >
-                  Kembali
-                </button>
-              )}
-              <button
-                onClick={async () => {
-                  setSubmitError("")
-                  if (step === 0 && !form.lokasi.trim()) return setSubmitError("Lokasi laporan wajib diisi.")
-                  if (step === 1 && (!form.judul.trim() || !form.kategori || !form.deskripsi.trim())) {
-                    return setSubmitError("Judul, kategori, dan deskripsi laporan wajib diisi.")
-                  }
-                  if (step < 2) return setStep((s) => s + 1)
-                  if (session?.role === "guest") return setSubmitError("Masuk atau buat akun warga sebelum mengirim laporan.")
-                  setSubmitting(true)
-                  try {
-                    const image = photo ? (await uploadImage(photo)).image : ""
-                    await createReport({ ...form, image }, { ownerId: session?.userId, ownerName: session?.name })
-                    navigate("/lacak")
-                  } catch (error) {
-                    setSubmitError(error.message || "Laporan gagal dikirim.")
-                  } finally {
-                    setSubmitting(false)
-                  }
-                }}
-                disabled={submitting}
-                className={`flex-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white py-3 text-xs font-bold shadow-md transition active:scale-95 disabled:opacity-60 ${
-                  step === 0 ? "w-full" : ""
-                }`}
-              >
-                {submitting ? "Mengirim..." : step < 2 ? "Lanjutkan" : "Kirim Laporan"}
-              </button>
-            </div>
+        <div className="flex gap-3 mt-6">
+          {step > 0 && (
+            <button
+              onClick={() => setStep((s) => s - 1)}
+              className="flex-1 rounded-xl border border-emerald-300 text-emerald-700 hover:bg-emerald-50 py-3 text-xs font-semibold transition active:scale-95"
+            >
+              Kembali
+            </button>
+          )}
+          <button
+            onClick={async () => {
+              setSubmitError("")
+              if (step === 0 && !form.lokasi.trim()) return setSubmitError("Lokasi laporan wajib diisi.")
+              if (step === 1 && (!form.judul.trim() || !form.kategori || !form.deskripsi.trim())) {
+                return setSubmitError("Judul, kategori, dan deskripsi laporan wajib diisi.")
+              }
+              if (step < 2) return setStep((s) => s + 1)
+              if (session?.role === "guest") return setSubmitError("Masuk atau buat akun warga sebelum mengirim laporan.")
+              setSubmitting(true)
+              try {
+                const image = photo ? (await uploadImage(photo)).image : ""
+                await createReport({ ...form, image }, { ownerId: session?.userId, ownerName: session?.name })
+                navigate("/lacak")
+              } catch (error) {
+                setSubmitError(error.message || "Laporan gagal dikirim.")
+              } finally {
+                setSubmitting(false)
+              }
+            }}
+            disabled={submitting}
+            className={`flex-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white py-3 text-xs font-bold shadow-md transition active:scale-95 disabled:opacity-60 ${
+              step === 0 ? "w-full" : ""
+            }`}
+          >
+            {submitting ? "Mengirim..." : step < 2 ? "Lanjutkan" : "Kirim Laporan"}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -412,4 +425,5 @@ function Field({ label, required, children, className = "" }) {
       <div className="mt-1">{children}</div>
     </label>
   );
-} 
+}
+export default Aspirasi;
