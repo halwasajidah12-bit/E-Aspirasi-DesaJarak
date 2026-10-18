@@ -13,6 +13,7 @@ export default function App() {
 
   const handleLogin = async (credentials) => {
     const result = await login(credentials)
+    localStorage.setItem('token', result.token)
     setSession({ role: result.role, name: result.name, userId: result.userId })
     setScreen(result.role === 'admin' ? 'admin' : 'user')
     return result
@@ -20,6 +21,7 @@ export default function App() {
 
   const handleRegister = async (credentials) => {
     const result = await register(credentials)
+    localStorage.setItem('token', result.token)
     setSession({ role: 'user', name: result.name, userId: result.userId })
     setScreen('user')
     return result
