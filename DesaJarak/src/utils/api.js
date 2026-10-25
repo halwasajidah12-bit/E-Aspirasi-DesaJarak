@@ -92,34 +92,10 @@ export const saveAppData = (key, value) => jsonRequest(`/data/${key}`, {
   body: JSON.stringify({ value }),
 })
 
-export const createReport = async (report, owner, files = []) => {
-  const formData = new FormData();
-  formData.append('judul', report.judul || '');
-  formData.append('deskripsi', report.deskripsi || '');
-  formData.append('lokasi', report.lokasi || '');
-  formData.append('rt', report.rt || '');
-  formData.append('rw', report.rw || '');
-  formData.append('waktu', report.waktu || '');
-  formData.append('tanggal', report.tanggal || '');
-  formData.append('kategori', report.kategori || '');
-  formData.append('ownerId', owner?.ownerId || '');
-  formData.append('ownerName', owner?.ownerName || 'Warga Desa');
-
-  // Kirim file foto (maks 5)
-  files.forEach((file, i) => formData.append(`images`, file));
-
-  const token = localStorage.getItem('token');
-  const response = await fetch('/api/reports', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token || ''}`,
-    },
-    body: formData,
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.message || 'Permintaan ke server gagal.');
-  return body;
-};
+export const createReport = (report, owner) => jsonRequest('/reports', {
+  method: 'POST',
+  body: JSON.stringify({ ...report, ...owner }),
+});
 
 export const getUserProfile = (id) => jsonRequest(`/users/${encodeURIComponent(id)}`)
 

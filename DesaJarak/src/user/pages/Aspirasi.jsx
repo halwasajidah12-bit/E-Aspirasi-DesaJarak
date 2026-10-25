@@ -3,6 +3,47 @@ import { useNavigate } from "react-router-dom";
 import { ArrowLeft, ScanLine, Camera } from "lucide-react";
 import { createReport, getCategories, uploadImage } from "../../utils/api.js";
 
+const MAX_PHOTO_SIZE = 5 * 1024 * 1024;
+const PHOTO_TYPES = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"]);
+
+const readPhoto = (file) =>
+  new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Foto tidak dapat dibaca. Gunakan format JPG, PNG, WebP, atau GIF."));
+    };
+    image.src = url;
+  });
+
+const preparePhoto = async (file) => {
+  if (!PHOTO_TYPES.has(file.type)) {
+    throw new Error("Format foto harus JPG, PNG, WebP, atau GIF.");
+  }
+  if (file.size <= MAX_PHOTO_SIZE) return file;
+
+  const image = await readPhoto(file);
+  const maxSide = 1600;
+  const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Foto gagal diproses. Coba pilih foto lain.");
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.82));
+  if (!blob) throw new Error("Foto gagal diproses. Coba pilih foto lain.");
+  if (blob.size > MAX_PHOTO_SIZE) throw new Error("Ukuran foto masih lebih dari 5 MB setelah dikompres.");
+  return new File([blob], `${file.name.replace(/\.[^.]+$/, "") || "foto"}.jpg`, { type: "image/jpeg" });
+};
+
 const Stepper = ({ current }) => (
   <div className="flex items-center justify-center gap-2 mb-5">
     {["Lokasi", "Detail", "Foto"].map((label, idx) => (
@@ -41,6 +82,7 @@ function Aspirasi({ session }) {
   const [dbCategories, setDbCategories] = useState([]);
   const [photo, setPhoto] = useState(null);
   const [photoPreview, setPhotoPreview] = useState("");
+  const [photoBusy, setPhotoBusy] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [scanActive, setScanActive] = useState(false);
@@ -48,6 +90,7 @@ function Aspirasi({ session }) {
   const [scanMessage, setScanMessage] = useState("");
   const [gpsBusy, setGpsBusy] = useState(false);
   const videoRef = useRef(null);
+  const photoInputRef = useRef(null);
   const navigate = useNavigate();
 
   const captureGpsLocation = useCallback((source) => {
@@ -184,6 +227,10 @@ function Aspirasi({ session }) {
       });
     return () => (mounted = false);
   }, []);
+
+  useEffect(() => () => {
+    if (photoPreview) URL.revokeObjectURL(photoPreview);
+  }, [photoPreview]);
 
   const update = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
   const [formErrors, setFormErrors] = useState({});
@@ -352,21 +399,32 @@ function Aspirasi({ session }) {
             <label className="border-2 border-dashed border-emerald-200 bg-emerald-50/50 hover:bg-emerald-50 transition rounded-2xl flex flex-col items-center justify-center py-10 cursor-pointer">
               <Camera size={34} className="text-emerald-600" />
               <p className="text-sm font-bold mt-3 text-gray-700">ambil foto/pilih dari galeri</p>
-              <p className="text-xs text-gray-400 mt-1">1 foto, maksimal 5 MB</p>
+              <p className="text-xs text-gray-400 mt-1">1 foto, maksimal 5 MB (JPG, PNG, WebP, GIF)</p>
               <input
+                ref={photoInputRef}
                 type="file"
-                accept="image/*"
+                accept="image/jpeg,image/png,image/webp,image/gif"
                 className="hidden"
-                onChange={(event) => {
+                disabled={photoBusy}
+                onChange={async (event) => {
                   const selected = event.target.files?.[0];
-                  if (selected) {
-                    setPhoto(selected);
-                    setPhotoPreview(URL.createObjectURL(selected));
-                    setSubmitError("");
+                  if (!selected) return;
+                  setSubmitError("");
+                  setPhotoBusy(true);
+                  try {
+                    const prepared = await preparePhoto(selected);
+                    setPhoto(prepared);
+                    setPhotoPreview(URL.createObjectURL(prepared));
+                  } catch (error) {
+                    setSubmitError(error.message);
+                    if (photoInputRef.current) photoInputRef.current.value = "";
+                  } finally {
+                    setPhotoBusy(false);
                   }
                 }}
               />
             </label>
+            {photoBusy && <p className="text-xs text-emerald-700 mt-2">Memproses foto...</p>}
             {photoPreview && <img src={photoPreview} alt="Foto laporan" className="mt-3 w-full max-h-56 rounded-xl object-cover" />}
           </div>
         )}
@@ -402,12 +460,12 @@ function Aspirasi({ session }) {
                 setSubmitting(false)
               }
             }}
-            disabled={submitting}
+            disabled={submitting || photoBusy}
             className={`flex-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white py-3 text-xs font-bold shadow-md transition active:scale-95 disabled:opacity-60 ${
               step === 0 ? "w-full" : ""
             }`}
           >
-            {submitting ? "Mengirim..." : step < 2 ? "Lanjutkan" : "Kirim Laporan"}
+            {photoBusy ? "Memproses foto..." : submitting ? "Mengirim..." : step < 2 ? "Lanjutkan" : "Kirim Laporan"}
           </button>
         </div>
       </div>

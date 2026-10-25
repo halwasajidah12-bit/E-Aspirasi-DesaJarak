@@ -27,7 +27,11 @@ const { Pool } = pg;
 // Konfigurasi Multer untuk Upload File
 const uploadDir = join(root, "uploads");
 // Pastikan folder uploads tersedia
-mkdir(uploadDir, { recursive: true }).catch(console.error);
+try {
+  await mkdir(uploadDir, { recursive: true });
+} catch (error) {
+  console.error("Gagal menyiapkan folder upload:", error);
+}
 
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
@@ -42,10 +46,23 @@ const upload = multer({
   storage,
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_request, file, callback) => {
-    if (["image/jpeg", "image/png", "image/gif", "image/webp"].includes(file.mimetype)) callback(null, true);
+    if (["image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp"].includes(file.mimetype)) callback(null, true);
     else callback(new Error("File harus berupa gambar."));
   },
 });
+
+const uploadErrorMessage = (error) => {
+  if (error?.code === "LIMIT_FILE_SIZE") return "Ukuran foto maksimal 5 MB.";
+  return error?.message || "Gagal mengunggah foto.";
+};
+
+const logUploadError = (label, error) => {
+  if (error?.code === "LIMIT_FILE_SIZE" || error?.message === "File harus berupa gambar.") {
+    console.warn(`${label} ditolak: ${error.message}`);
+    return;
+  }
+  console.error(`${label} gagal:`, error);
+};
 
 const classifyReportWithGemini = async (description) => {
   if (!ai) return null;
@@ -131,40 +148,162 @@ if (!token) {
 }
 
 
-// Inisialisasi pool database dengan dukungan DATABASE_URL dan SSL otomatis
-const hasDatabaseUrl = Boolean(process.env.DATABASE_URL);
-const hasDatabaseConfig =
-  hasDatabaseUrl ||
-  (process.env.PGHOST &&
-    process.env.PGUSER &&
-    process.env.PGPASSWORD &&
-    (process.env.PGDATABASE || process.env.POSTGRES_DB));
+const normalizeSslMode = (value) => String(value || "").trim().toLowerCase();
+const isLocalDatabaseHost = (host) =>
+  ["localhost", "127.0.0.1", "::1"].includes(String(host || "").toLowerCase());
 
-if (!hasDatabaseConfig) {
-  throw new Error(
-    "Konfigurasi PostgreSQL belum lengkap. Atur DATABASE_URL atau PGHOST, PGUSER, PGPASSWORD, dan PGDATABASE/POSTGRES_DB pada environment service aplikasi.",
-  );
-}
+const resolveDatabaseSsl = (host, explicitMode, defaultToSsl = false) => {
+  const mode = normalizeSslMode(explicitMode);
+  if (["disable", "false", "off", "0", "no"].includes(mode)) return false;
+  if (["require", "true", "on", "1", "yes", "verify-ca", "verify-full"].includes(mode)) {
+    return { rejectUnauthorized: false };
+  }
 
-const pool = process.env.DATABASE_URL
-  ? new Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl:
-        process.env.DATABASE_URL.includes("railway.internal")
-          ? false
-          : { rejectUnauthorized: false },
-    })
-  : new Pool({
-      host: process.env.PGHOST,
-      port: Number(process.env.PGPORT || 5432),
-      user: process.env.PGUSER,
-      password: process.env.PGPASSWORD,
-      database: process.env.PGDATABASE || process.env.POSTGRES_DB,
-      ssl:
-        process.env.PGSSL === "true" || process.env.PGHOST?.includes("railway")
-          ? { rejectUnauthorized: false }
-          : undefined,
+  const normalizedHost = String(host || "").toLowerCase();
+  if (isLocalDatabaseHost(normalizedHost) || normalizedHost.endsWith(".railway.internal")) {
+    return false;
+  }
+  if (normalizedHost.includes("railway")) return { rejectUnauthorized: false };
+  return defaultToSsl ? { rejectUnauthorized: false } : undefined;
+};
+
+const buildDatabaseCandidates = () => {
+  const candidates = [];
+
+  for (const [label, connectionString] of [
+    ["DATABASE_URL", process.env.DATABASE_URL?.trim()],
+    ["DATABASE_PUBLIC_URL", process.env.DATABASE_PUBLIC_URL?.trim()],
+  ]) {
+    if (!connectionString || candidates.some((candidate) => candidate.connectionString === connectionString)) {
+      continue;
+    }
+
+    if (connectionString.includes("${{")) {
+      candidates.push({
+        label: `${label} (variabel reference belum ter-resolve)`,
+        connectionString,
+        configError: "Nilai masih mengandung ${{...}}. Gunakan format ${{NamaService.VARIABEL}}.",
+      });
+      continue;
+    }
+
+    let host = "";
+    let sslmode = "";
+    try {
+      const parsed = new URL(connectionString);
+      host = parsed.hostname;
+      sslmode = parsed.searchParams.get("sslmode") || "";
+    } catch {
+      candidates.push({
+        label,
+        connectionString,
+        configError: "Format URL tidak valid.",
+      });
+      continue;
+    }
+
+    candidates.push({
+      label: `${label} (${host})`,
+      connectionString,
+      config: {
+        connectionString,
+        ssl: resolveDatabaseSsl(host, sslmode, true),
+      },
     });
+  }
+
+  const pgHost = process.env.PGHOST?.trim();
+  const pgUser = process.env.PGUSER?.trim();
+  const pgPassword = process.env.PGPASSWORD;
+  const pgDatabase = (process.env.PGDATABASE || process.env.POSTGRES_DB)?.trim();
+
+  if (pgHost && pgUser && pgPassword !== undefined && pgDatabase) {
+    const pgPort = Number(process.env.PGPORT || 5432);
+    candidates.push({
+      label: `PGHOST (${pgHost}:${pgPort})`,
+      config: {
+        host: pgHost,
+        port: pgPort,
+        user: pgUser,
+        password: pgPassword,
+        database: pgDatabase,
+        ssl: resolveDatabaseSsl(pgHost, process.env.PGSSL),
+      },
+    });
+  }
+
+  return candidates;
+};
+
+const readPositiveNumber = (value, fallback) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const databaseConnectAttempts = Math.floor(readPositiveNumber(process.env.DB_CONNECT_ATTEMPTS, 3));
+const databaseRetryDelayMs = readPositiveNumber(process.env.DB_CONNECT_RETRY_DELAY_MS, 1500);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const createPool = (config) => {
+  const databasePool = new Pool({
+    ...config,
+    connectionTimeoutMillis: 8000,
+  });
+  databasePool.on("error", (error) => {
+    console.error("PostgreSQL pool error:", error.message);
+  });
+  return databasePool;
+};
+
+let pool;
+
+const connectDatabase = async () => {
+  const candidates = buildDatabaseCandidates();
+  if (!candidates.length) {
+    const error = new Error(
+      "Konfigurasi PostgreSQL belum lengkap. Atur DATABASE_URL (disarankan: ${{Postgres.DATABASE_URL}}) atau PGHOST, PGUSER, PGPASSWORD, dan PGDATABASE/POSTGRES_DB pada service aplikasi Railway.",
+    );
+    error.code = "DB_CONFIG_MISSING";
+    throw error;
+  }
+
+  const failures = [];
+  for (const candidate of candidates) {
+    if (candidate.configError) {
+      failures.push(`${candidate.label}: ${candidate.configError}`);
+      continue;
+    }
+
+    for (let attempt = 1; attempt <= databaseConnectAttempts; attempt += 1) {
+      const candidatePool = createPool(candidate.config);
+      try {
+        const client = await candidatePool.connect();
+        try {
+          await client.query("SELECT 1");
+        } finally {
+          client.release();
+        }
+        console.log(`Database terhubung menggunakan ${candidate.label}.`);
+        return candidatePool;
+      } catch (error) {
+        await candidatePool.end().catch(() => {});
+        failures.push(`${candidate.label} [${attempt}/${databaseConnectAttempts}]: ${error.code || error.message}`);
+        console.warn(`Koneksi database gagal via ${candidate.label} (${error.code || error.message}).`);
+        if (attempt < databaseConnectAttempts) {
+          console.warn(`Mencoba lagi dalam ${databaseRetryDelayMs * attempt} ms...`);
+          await sleep(databaseRetryDelayMs * attempt);
+        }
+      }
+    }
+  }
+
+  const error = new Error(
+    `Gagal terhubung ke database setelah mencoba ${candidates.length} konfigurasi koneksi.`,
+  );
+  error.code = "DB_CONNECT_FAILED";
+  error.failures = failures;
+  throw error;
+};
 const categoryNames = [
   "Pembangunan Desa",
   "Penggunaan Website",
@@ -423,6 +562,7 @@ const uploadMimeType = (filename) => ({
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
+  ".jfif": "image/jpeg",
   ".gif": "image/gif",
   ".webp": "image/webp",
 }[extname(filename).toLowerCase()] || "application/octet-stream");
@@ -753,6 +893,19 @@ const initDatabase = async () => {
 
 const handleApi = async (request, response, url) => {
   const { pathname, searchParams } = url;
+
+  if (request.method === "GET" && pathname === "/api/health") {
+    if (!pool) {
+      return sendJson(response, 503, { status: "error", database: "not-connected" });
+    }
+    try {
+      await pool.query("SELECT 1");
+      return sendJson(response, 200, { status: "ok", database: "connected" });
+    } catch (error) {
+      return sendJson(response, 503, { status: "error", database: "disconnected" });
+    }
+  }
+
   const principal = await getAuthenticatedUser(request);
 
   if (request.method === "GET" && pathname === "/api/auth/config") {
@@ -1109,7 +1262,8 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
     return new Promise((resolve) => {
       upload.single("file")(request, response, (error) => {
         if (error) {
-          sendJson(response, 400, { message: error.message || "Gagal mengunggah foto." });
+          logUploadError("Upload foto", error);
+          sendJson(response, 400, { message: uploadErrorMessage(error) });
         } else if (!request.file) {
           sendJson(response, 400, { message: "Pilih foto terlebih dahulu." });
         } else {
@@ -1643,8 +1797,8 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
     return new Promise((resolve, reject) => {
       upload.single("foto")(request, response, async (err) => {
         if (err) {
-          console.error("Multer error:", err);
-          sendJson(response, 400, { message: "Gagal mengunggah foto." });
+          logUploadError("Upload foto profil", err);
+          sendJson(response, 400, { message: uploadErrorMessage(err) });
           return resolve();
         }
 
@@ -1754,14 +1908,38 @@ const server = http.createServer(async (request, response) => {
   }
 });
 
-initDatabase()
-  .then(() =>
+connectDatabase()
+  .then((databasePool) => {
+    pool = databasePool;
+    return initDatabase();
+  })
+  .then(() => {
     server.listen(port, "0.0.0.0", () => {
       console.log(`Berhasil terhubung ke database PostgreSQL!`);
       console.log(`E-Aspirasi listening on port ${port}`);
-    }),
-  )
+    });
+  })
   .catch((error) => {
-    console.error("Database connection failed:", error);
+    console.error("Database connection failed:", error.message);
+    if (error.failures?.length) {
+      for (const failure of error.failures) {
+        console.error(" -", failure);
+      }
+    }
+    if (!process.env.RAILWAY_ENVIRONMENT && error.code === "DB_CONNECT_FAILED") {
+      console.error(
+        "Catatan lokal: host *.railway.internal hanya bisa diakses dari dalam Railway. Gunakan DATABASE_PUBLIC_URL dari service PostgreSQL Railway atau PostgreSQL lokal.",
+      );
+    }
+    if (error.code === "DB_CONNECT_FAILED" && error.failures?.some((failure) => failure.includes(".proxy.rlwy.net"))) {
+      console.error(
+        "DATABASE_URL mengarah ke public proxy Railway. Di service aplikasi, gunakan DATABASE_URL=${{Postgres.DATABASE_URL}} (host *.railway.internal).",
+      );
+    }
+    if (error.code === "DB_CONNECT_FAILED" && error.failures?.some((failure) => failure.includes("ECONNREFUSED"))) {
+      console.error(
+        "PostgreSQL menolak koneksi. Pastikan service database berstatus Running dan berada di project/environment yang sama dengan service aplikasi.",
+      );
+    }
     process.exit(1);
   });
