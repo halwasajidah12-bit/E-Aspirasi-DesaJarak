@@ -29,6 +29,7 @@ export default function App() {
 
   const handleGuest = () => {
     const userId = globalThis.crypto?.randomUUID?.() || `guest-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    localStorage.removeItem('token')
     setSession({ role: 'guest', name: 'Tamu', userId })
     setScreen('user')
   }
@@ -39,6 +40,7 @@ export default function App() {
   }
 
   const handleLogout = () => {
+    localStorage.removeItem('token')
     setSession(null)
     setScreen('login')
     navigate('/') // reset citizen app's internal route so a fresh login starts at Home

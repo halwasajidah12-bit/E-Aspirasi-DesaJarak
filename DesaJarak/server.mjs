@@ -64,6 +64,25 @@ const logUploadError = (label, error) => {
   console.error(`${label} gagal:`, error);
 };
 
+const initialReportVotes = new Map(
+  initialReports.map((report) => [String(report.id), Number(report.votes) || 0]),
+);
+
+const toFiniteNumber = (value) => {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const resolveVoteBaseline = (report) => {
+  const stored = toFiniteNumber(report.voteBaseline);
+  if (stored !== null) return Math.max(0, stored);
+  const seedVotes = initialReportVotes.get(String(report.id));
+  if (seedVotes !== undefined) return seedVotes;
+  if (report.votesManaged) return 0;
+  return Math.max(0, toFiniteNumber(report.votes) ?? 0);
+};
+
 const classifyReportWithGemini = async (description) => {
   if (!ai) return null;
   try {
@@ -1175,7 +1194,7 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
     const reports = stored
       .map((report) => ({
         ...report,
-        votes: report.votesManaged ? (voteCounts.get(String(report.id)) || 0) : (voteCounts.get(String(report.id)) || report.votes || 0),
+        votes: resolveVoteBaseline(report) + (voteCounts.get(String(report.id)) || 0),
         votedByMe: myVoteIds.has(String(report.id)),
       }));
     return sendJson(response, 200, reports);
@@ -1294,14 +1313,22 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
       );
       const votedByMe = added.rowCount > 0;
       if (!votedByMe) await client.query("DELETE FROM report_votes WHERE report_id = $1 AND user_id = $2", [id, principal.id]);
-      const count = await client.query("SELECT COUNT(*)::int AS count FROM report_votes WHERE report_id = $1", [id]);
-      const next = { ...current, votes: count.rows[0].count, votesManaged: true };
+      const countResult = await client.query("SELECT COUNT(*)::int AS count FROM report_votes WHERE report_id = $1", [id]);
+      const count = Number(countResult.rows[0]?.count) || 0;
+      const voteBaseline = resolveVoteBaseline(current);
+      const next = { ...current, votes: voteBaseline + count, votesManaged: true, voteBaseline };
       await client.query(
         "UPDATE app_data SET data_value = $1, updated_at = NOW() WHERE data_key = $2",
         [JSON.stringify(reports.map((report) => String(report.id) === id ? next : report)), "reports"],
       );
       await client.query("COMMIT");
-      if (votedByMe) await awardPoints(principal.id, "vote", id, `Mendukung laporan ${id}`, 50);
+      if (votedByMe) {
+        try {
+          await awardPoints(principal.id, "vote", id, `Mendukung laporan ${id}`, 50);
+        } catch (error) {
+          console.error("Gagal memberikan poin vote:", error);
+        }
+      }
       return sendJson(response, 200, { ...next, votedByMe });
     } catch (error) {
       await client.query("ROLLBACK");

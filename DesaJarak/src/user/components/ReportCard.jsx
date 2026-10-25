@@ -2,16 +2,31 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Calendar, MapPin, ThumbsUp } from "lucide-react";
 import { statusColor } from "../data/laporan";
+import { toggleReportVote } from "../../utils/api.js";
 
-export default function ReportCard({ report }) {
-  const [didukung, setDidukung] = useState(false);
-  const [dukungan, setDukungan] = useState(report.dukungan);
+export default function ReportCard({ report, session, onReportUpdate }) {
+  const [voting, setVoting] = useState(false);
+  const [voteError, setVoteError] = useState("");
+  const canVote = session?.role === "user";
 
-  const toggleDukungan = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDukungan((n) => (didukung ? n - 1 : n + 1));
-    setDidukung((v) => !v);
+  const toggleDukungan = async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setVoteError("");
+    if (!canVote) {
+      setVoteError("Masuk sebagai warga untuk mendukung laporan.");
+      return;
+    }
+    if (voting) return;
+    setVoting(true);
+    try {
+      const updated = await toggleReportVote(report.id);
+      onReportUpdate?.(updated);
+    } catch (error) {
+      setVoteError(error.message || "Dukungan gagal disimpan.");
+    } finally {
+      setVoting(false);
+    }
   };
 
   return (
@@ -56,14 +71,17 @@ export default function ReportCard({ report }) {
       </div>
 
       <div className="flex items-center justify-between pt-2 border-t border-gray-100">
-        <span className="text-xs text-gray-500">{dukungan} Dukungan Warga</span>
+        <span className="text-xs text-gray-500">{Number(report.dukungan) || 0} Dukungan Warga</span>
         <div className="flex items-center gap-2">
           <button
             onClick={toggleDukungan}
-            aria-label={didukung ? "Batalkan dukungan" : "Dukung laporan"}
-            className={`transition active:scale-90 ${didukung ? "text-emerald-600" : "text-gray-400 hover:text-emerald-600"}`}
+            disabled={voting}
+            aria-pressed={Boolean(report.votedByMe)}
+            aria-label={report.votedByMe ? "Batalkan dukungan" : "Dukung laporan"}
+            title={canVote ? (report.votedByMe ? "Batalkan dukungan" : "Dukung laporan") : "Masuk sebagai warga untuk mendukung laporan"}
+            className={`transition active:scale-90 disabled:opacity-50 ${report.votedByMe ? "text-emerald-600" : "text-gray-400 hover:text-emerald-600"}`}
           >
-            <ThumbsUp size={16} fill={didukung ? "currentColor" : "none"} />
+            <ThumbsUp size={16} fill={report.votedByMe ? "currentColor" : "none"} />
           </button>
           <Link
             to={`/lacak/${String(report.id).replace("#", "")}`}
@@ -73,6 +91,7 @@ export default function ReportCard({ report }) {
           </Link>
         </div>
       </div>
+      {voteError && <p role="alert" className="text-[10px] font-medium text-rose-600">{voteError}</p>}
     </div>
   );
 }

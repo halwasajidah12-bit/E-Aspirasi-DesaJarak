@@ -8,18 +8,24 @@ import { mapApiReport } from "../data/laporan";
 
 const filters = ["Terbaru", "2 Bulan Terakhir", "Prioritas"];
 
-export default function VotePrioritas() {
+export default function VotePrioritas({ session }) {
   const [active, setActive] = useState("Terbaru");
   const [query, setQuery] = useState("");
   const [laporanData, setLaporanData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
 
+  const handleReportUpdate = (updated) => {
+    setLaporanData((items) => items.map((item) => (
+      String(item.id) === String(updated.id) ? mapApiReport(updated) : item
+    )));
+  };
+
   useEffect(() => {
     let mounted = true;
     const refresh = async () => {
       try {
-        const items = await getReports("public");
+        const items = await getReports();
         if (mounted) {
           setLaporanData(items.map(mapApiReport));
           setLoadError("");
@@ -96,7 +102,7 @@ export default function VotePrioritas() {
 
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {laporan.map((r) => (
-            <ReportCard key={r.id} report={r} />
+            <ReportCard key={r.id} report={r} session={session} onReportUpdate={handleReportUpdate} />
           ))}
           {loading && laporan.length === 0 && (
             <p role="status" className="md:col-span-full text-center text-xs text-gray-500 font-medium py-8 bg-white rounded-2xl border border-gray-100">

@@ -97,6 +97,10 @@ export const createReport = (report, owner) => jsonRequest('/reports', {
   body: JSON.stringify({ ...report, ...owner }),
 });
 
+export const toggleReportVote = (id) => jsonRequest(`/reports/${encodeURIComponent(String(id).replace(/^#/, ''))}/vote`, {
+  method: 'POST',
+});
+
 export const getUserProfile = (id) => jsonRequest(`/users/${encodeURIComponent(id)}`)
 
 export const updateUserProfile = async (id, formData) => {
