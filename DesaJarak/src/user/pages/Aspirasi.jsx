@@ -55,7 +55,6 @@ export default function Aspirasi({ session }) {
     kategori: "",
     kategoriLainnya: "",
     deskripsi: "",
-    visibility: "private",
   }));
   const navigate = useNavigate();
   const [submitting, setSubmitting] = useState(false);
@@ -527,16 +526,8 @@ export default function Aspirasi({ session }) {
                 <p className="mt-1">Laporan ini tidak akan ditampilkan kepada warga lain atau di Riwayat warga. Admin desa yang dapat melihat dan menindaklanjutinya.</p>
               </div>
             ) : (
-              <div className="mt-4 space-y-2">
-                <p className="text-xs font-semibold text-gray-700">Privasi laporan</p>
-                <label className="flex items-start gap-2 rounded-xl border border-emerald-100 p-3 text-xs">
-                  <input type="radio" name="visibility" checked={form.visibility === "private"} onChange={() => setForm((current) => ({ ...current, visibility: "private" }))} />
-                  <span><b>Pribadi</b><br /><span className="text-gray-500">Hanya Anda dan admin desa yang dapat melihatnya.</span></span>
-                </label>
-                <label className="flex items-start gap-2 rounded-xl border border-emerald-100 p-3 text-xs">
-                  <input type="radio" name="visibility" checked={form.visibility === "public"} onChange={() => setForm((current) => ({ ...current, visibility: "public" }))} />
-                  <span><b>Publik</b><br /><span className="text-gray-500">Laporan ditampilkan di menu Lacak Laporan.</span></span>
-                </label>
+              <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50 p-3 text-xs text-blue-900">
+                Laporan kategori ini akan tampil di menu Lacak Laporan dan dapat dilihat warga lain.
               </div>
             )}
           </div>
@@ -572,7 +563,7 @@ export default function Aspirasi({ session }) {
               try {
                 const image = photo ? (await uploadImage(photo)).image : ""
                 await createReport({ ...form, image }, { ownerId: session?.userId, ownerName: session?.name })
-                navigate(otherCategorySelected ? "/" : form.visibility === "private" ? "/riwayat" : "/lacak")
+                navigate(otherCategorySelected ? "/" : "/lacak")
               } catch (error) {
                 if (error.status === 429) {
                   if (error.data?.quota) setReportQuota(error.data.quota)

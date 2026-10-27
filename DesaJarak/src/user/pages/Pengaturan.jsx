@@ -204,7 +204,6 @@ export default function Pengaturan({ session }) {
           </div>
           {pushState.loading ? <p className="mt-1 text-[11px] text-gray-500">Memeriksa notifikasi di perangkat ini...</p> : null}
           <p className="mt-1 text-[11px] text-gray-500">Riwayat notifikasi tetap tersedia di lonceng dashboard.</p>
-          {!pushState.loading && session?.role !== "guest" && !pushState.configured && <p className="mt-1 text-[11px] text-amber-700">Notifikasi push belum dikonfigurasi pengelola website.</p>}
           {!pushState.loading && session?.role !== "guest" && pushState.configured && !pushEnabled && <p className="mt-1 text-[11px] text-gray-500">Belum aktif di perangkat ini. Aktifkan di sini lalu izinkan notifikasi dari browser.</p>}
           {pushState.message && <p role={pushState.messageType === "error" ? "alert" : "status"} className={`mt-1 text-[11px] ${pushState.messageType === "error" ? "text-rose-700" : "text-emerald-700"}`}>{pushState.message}</p>}
           {session?.role === "guest" && <p className="mt-1 text-[11px] text-gray-500">Masuk ke akun warga untuk mengatur notifikasi HP.</p>}

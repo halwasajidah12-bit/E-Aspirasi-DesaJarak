@@ -577,10 +577,13 @@ const reportBelongsToUser = (report, user) => {
     : String(report.ownerId || "") === String(user.username || "");
 };
 
+const isReportWithdrawn = (report) => Boolean(report.withdrawnAt) || report.status === "Ditarik";
+const hasReportBeenProcessed = (report) => (report.statusHistory || []).some((entry) => entry.status !== "Masuk");
+
 const canAccessReport = (report, user) => {
   if (isAdmin(user)) return true;
   if (report.visibility === "admin") return false;
-  if (report.visibility === "private") return reportBelongsToUser(report, user);
+  if (isReportWithdrawn(report)) return reportBelongsToUser(report, user);
   return true;
 };
 
@@ -1119,21 +1122,26 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
     const matchedReport = idMatch && availableReports.find((report) => String(report.id).toLowerCase() === idMatch[0].toLowerCase());
     let reply;
     if (matchedReport) reply = `Laporan ${matchedReport.id} (${matchedReport.title}) berstatus ${matchedReport.status}.`;
-    else if (normalized.includes("privasi") || normalized.includes("rahasia") || normalized.includes("pribadi")) reply = "Aspirasi dengan pilihan privat hanya dapat dilihat oleh akun Anda dan petugas admin. Pilih opsi Privat saat mengirim aspirasi.";
-    else if (normalized.includes("lapor") || normalized.includes("aspirasi")) reply = "Buka menu Aspirasi, isi judul, lokasi, dan deskripsi dengan jelas. Anda dapat memilih laporan privat atau publik sebelum mengirim.";
+    else if ((normalized.includes("siapa") || normalized.includes("lihat")) && (normalized.includes("lapor") || normalized.includes("aspirasi"))) reply = "Laporan dengan kategori umum dapat dilihat warga lain di menu Lacak Laporan. Laporan dengan kategori Lainnya hanya dapat dilihat admin desa.";
+    else if (normalized.includes("privasi") || normalized.includes("rahasia") || normalized.includes("pribadi")) reply = "Laporan dengan kategori umum dapat dilihat warga lain di menu Lacak Laporan. Laporan dengan kategori Lainnya hanya dapat dilihat admin desa.";
+    else if (normalized.includes("lapor") || normalized.includes("aspirasi")) reply = "Buka menu Aspirasi, lalu isi lokasi, judul, kategori, dan deskripsi dengan jelas. Laporan kategori umum akan tampil di menu Lacak Laporan.";
     else if (normalized.includes("status") || normalized.includes("lacak")) reply = "Untuk melihat tindak lanjut, buka menu Lacak atau Riwayat. Masukkan kode laporan seperti JR-123456 agar saya dapat membantu mengecek statusnya.";
     else if (normalized.includes("berapa hari") || normalized.includes("ditindaklanjuti")) reply = "Waktu tindak lanjut bergantung pada jenis masalah dan proses pemeriksaan desa. Pantau status terbaru melalui menu Riwayat atau Lacak Laporan.";
-    else reply = "Saya dapat membantu menjelaskan cara membuat aspirasi, privasi laporan, dan cara melacak status. Sertakan kode laporan jika ingin mengecek status tertentu.";
+    else reply = "Saya dapat membantu menjelaskan cara membuat aspirasi dan melacak status laporan. Sertakan kode laporan jika ingin mengecek status tertentu.";
     return sendJson(response, 200, { reply, mode: "guide" });
   }
 
   if (request.method === "GET" && pathname === "/api/rewards") {
     if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk melihat poin reward." });
+    const includeAllActivities = searchParams.get("activities") === "all";
+    const activityQuery = includeAllActivities
+      ? "SELECT activity_type, reference_id, description, points, created_at FROM reward_activities WHERE user_id = $1 ORDER BY created_at DESC"
+      : "SELECT activity_type, reference_id, description, points, created_at FROM reward_activities WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20";
     const [userResult, rankResult, leaderboardResult, activityResult, reportResult] = await Promise.all([
       pool.query("SELECT COALESCE(poin, 0)::int AS points FROM users WHERE id = $1", [principal.id]),
       pool.query("SELECT rank::int FROM (SELECT id, ROW_NUMBER() OVER (ORDER BY COALESCE(poin, 0) DESC, created_at ASC, id ASC) AS rank FROM users WHERE role <> 'admin') ranked WHERE id = $1", [principal.id]),
       pool.query("SELECT id, COALESCE(poin, 0)::int AS points FROM users WHERE role <> 'admin' ORDER BY COALESCE(poin, 0) DESC, created_at ASC, id ASC LIMIT 10"),
-      pool.query("SELECT activity_type, reference_id, description, points, created_at FROM reward_activities WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20", [principal.id]),
+      pool.query(activityQuery, [principal.id]),
       pool.query("SELECT data_value FROM app_data WHERE data_key = 'reports'"),
     ]);
     const userReports = (reportResult.rows[0]?.data_value || []).filter((report) => String(report.ownerId) === principal.username).length;
@@ -1180,11 +1188,13 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
       .filter((report) => {
         if (scope === "mine") return report.visibility !== "admin" && reportBelongsToUser(report, principal);
         if (scope === "accessible") return canAccessReport(report, principal);
-        if (scope === "public") return report.visibility === "public" || !report.visibility;
-        return true;
+        if (scope === "public") return report.visibility !== "admin" && !isReportWithdrawn(report);
+        return !isReportWithdrawn(report);
       })
       .map((report) => ({
         ...report,
+        // Laporan lama yang dahulu privat sekarang menjadi publik, kecuali laporan khusus admin.
+        visibility: report.visibility === "admin" ? "admin" : "public",
         votes: report.votesManaged ? (voteCounts.get(String(report.id)) || 0) : (voteCounts.get(String(report.id)) || report.votes || 0),
         votedByMe: myVoteIds.has(String(report.id)),
       }));
@@ -1245,7 +1255,7 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
         ownerUserId: principal.id,
         ownerId: principal.username,
         ownerName: principal.fullname || principal.nama || "Warga Desa",
-        visibility: otherCategory ? "admin" : body.visibility === "public" ? "public" : "private",
+        visibility: otherCategory ? "admin" : "public",
         category: otherCategory ? customCategory : categoryMap[selectedCategory] || selectedCategory || "Lainnya",
         ...(otherCategory ? { categoryGroup: "Lainnya" } : {}),
         aiCategory: aiCategory || "Belum diklasifikasi" ,
@@ -1284,7 +1294,7 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
       });
     }
 
-    await awardPoints(principal.id, "report", report.id, `Mengirim aspirasi ${report.id}`, 20);
+    await awardPoints(principal.id, "report", report.id, `Mengirim aspirasi ${report.id}`, 50);
 
     await recordNotification({
       title: report.urgency === "Tinggi" ? "Laporan baru dengan urgensi tinggi" : "Laporan baru masuk",
@@ -1332,7 +1342,7 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
       pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["reports"]),
     ]);
     const reportOwners = (reportsResult.rows[0]?.data_value || [])
-      .filter((report) => report.visibility === "private" && report.image === `/uploads/${filename}`)
+      .filter((report) => isReportWithdrawn(report) && report.visibility !== "admin" && report.image === `/uploads/${filename}`)
       .map((report) => String(report.ownerId));
     const allowed = isAdmin(principal) ||
       profileOwner.rows.some((row) => row.username === principal.username) ||
@@ -1374,7 +1384,7 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
       const result = await client.query("SELECT data_value FROM app_data WHERE data_key = $1 FOR UPDATE", ["reports"]);
       const reports = result.rows[0]?.data_value || [];
       const current = reports.find((item) => String(item.id) === id);
-      if (!current || !canAccessReport(current, principal)) {
+      if (!current || isReportWithdrawn(current) || !canAccessReport(current, principal)) {
         await client.query("ROLLBACK");
         return sendJson(response, 404, { message: "Laporan tidak ditemukan." });
       }
@@ -1392,8 +1402,73 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
         [JSON.stringify(reports.map((report) => String(report.id) === id ? next : report)), "reports"],
       );
       await client.query("COMMIT");
-      if (votedByMe) await awardPoints(principal.id, "vote", id, `Mendukung laporan ${id}`, 50);
+      if (votedByMe) await awardPoints(principal.id, "vote", id, `Mendukung laporan ${id}`, 10);
       return sendJson(response, 200, { ...next, votedByMe });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  if (request.method === "DELETE" && /^\/api\/reports\/[^/]+$/.test(pathname)) {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk menarik laporan." });
+    const id = decodeURIComponent(pathname.slice("/api/reports/".length));
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query("SELECT data_value FROM app_data WHERE data_key = $1 FOR UPDATE", ["reports"]);
+      const reports = result.rows[0]?.data_value || [];
+      const current = reports.find((item) => String(item.id) === id);
+      if (!current) {
+        await client.query("ROLLBACK");
+        return sendJson(response, 404, { message: "Laporan tidak ditemukan." });
+      }
+      if (!reportBelongsToUser(current, principal)) {
+        await client.query("ROLLBACK");
+        return sendJson(response, 403, { message: "Anda hanya dapat menarik laporan yang Anda buat." });
+      }
+      if (current.status !== "Masuk" || isReportWithdrawn(current) || hasReportBeenProcessed(current)) {
+        await client.query("ROLLBACK");
+        return sendJson(response, 409, { message: "Laporan tidak dapat ditarik setelah mulai diproses." });
+      }
+
+      const withdrawnAt = new Date().toISOString();
+      const withdrawnReport = {
+        ...current,
+        status: "Ditarik",
+        withdrawnAt,
+        statusHistory: [
+          ...(current.statusHistory || []),
+          { status: "Ditarik", time: withdrawnAt, reply: "Laporan ditarik oleh pembuatnya." },
+        ],
+      };
+      await client.query("UPDATE app_data SET data_value = $1, updated_at = NOW() WHERE data_key = $2", [
+        JSON.stringify(reports.map((report) => String(report.id) === id ? withdrawnReport : report)),
+        "reports",
+      ]);
+
+      const pointsResult = await client.query(
+        `WITH removed_activity AS (
+           DELETE FROM reward_activities
+           WHERE user_id = $1 AND activity_type = 'report' AND reference_id = $2
+           RETURNING user_id, points
+         )
+         UPDATE users AS account
+         SET poin = GREATEST(COALESCE(account.poin, 0) - removed_activity.points, 0)
+         FROM removed_activity
+         WHERE account.id = removed_activity.user_id
+         RETURNING removed_activity.points AS points_deducted`,
+        [principal.id, id],
+      );
+      await client.query("COMMIT");
+      return sendJson(response, 200, {
+        success: true,
+        reportId: id,
+        pointsDeducted: Number(pointsResult.rows[0]?.points_deducted || 0),
+        report: withdrawnReport,
+      });
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -1415,7 +1490,7 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
     let previousReport = null;
     const updated = await mutateReports((items) => {
       const current = items.find((item) => String(item.id) === id);
-      if (!current) return null;
+      if (!current || isReportWithdrawn(current)) return null;
       previousReport = current;
 
       const time = new Date().toISOString();
@@ -1498,7 +1573,7 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
 
     const updated = await mutateReports((items) => {
       const current = items.find((item) => String(item.id) === id);
-      if (!current) return null;
+      if (!current || isReportWithdrawn(current)) return null;
       if (!canAccessReport(current, principal)) return null;
 
       const commentsList = [...(current.commentsList || [])];
@@ -1535,7 +1610,7 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
 
       if (updated.commentsList?.length) {
         const latestComment = updated.commentsList.at(-1);
-        if (!isAdmin(principal)) await awardPoints(principal.id, "report_comment", latestComment.id, `Komentar pada laporan ${updated.id}`, 50);
+        if (!isAdmin(principal)) await awardPoints(principal.id, "report_comment", latestComment.id, `Komentar pada laporan ${updated.id}`, 10);
         await recordNotification({
           title: "Komentar baru pada laporan",
           description: `${latestComment.name} mengomentari ${updated.id}: ${updated.title}`,
@@ -1781,7 +1856,7 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
       } catch (err) {}
 
       if (role === "user") {
-        await awardPoints(principal.id, "news_comment", comment.id, `Komentar pada berita ${updated.title}`, 50);
+        await awardPoints(principal.id, "news_comment", comment.id, `Komentar pada berita ${updated.title}`, 10);
         await recordNotification({
           title: "Komentar baru pada berita desa",
           description: `${comment.name} mengomentari "${updated.title}".`,
@@ -1974,10 +2049,10 @@ const serveStatic = async (response, pathname) => {
         pool.query("SELECT id FROM users WHERE foto = $1", [filename]),
         pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["reports"]),
       ]);
-      const privateReportImage = (reportsResult.rows[0]?.data_value || []).some(
-        (report) => ["private", "admin"].includes(report.visibility) && report.image === `/uploads/${filename}`,
+      const restrictedReportImage = (reportsResult.rows[0]?.data_value || []).some(
+        (report) => (report.visibility === "admin" || isReportWithdrawn(report)) && report.image === `/uploads/${filename}`,
       );
-      if (profileOwner.rows.length || privateReportImage) throw new Error("private-file");
+      if (profileOwner.rows.length || restrictedReportImage) throw new Error("private-file");
 
       const filePath = join(uploadDir, filename);
       const fileStat = await stat(filePath);

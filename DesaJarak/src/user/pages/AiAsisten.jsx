@@ -14,7 +14,7 @@ import { askAssistant } from "../../utils/api.js";
 const quickQuestions = [
   "Bagaimana caranya melapor?",
   "Berapa hari aspirasi ditindaklanjuti?",
-  "Apakah data pelapor dijaga privasinya?",
+  "Siapa yang dapat melihat laporan saya?",
 ];
 
 function formatTime(date) {

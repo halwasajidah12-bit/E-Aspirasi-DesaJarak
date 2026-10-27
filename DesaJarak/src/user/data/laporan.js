@@ -89,8 +89,11 @@ export const mapApiReport = (report) => ({
   tanggapan: report.officialReply || "",
   aiSuggestion: report.aiSuggestion || "Belum ada komentar warga.",
   statusHistory: report.statusHistory || [],
+  withdrawnAt: report.withdrawnAt || "",
   votedByMe: Boolean(report.votedByMe),
-  visibility: report.visibility === "private" ? "private" : "public",
+  // Laporan lama yang dahulu privat kini mengikuti aturan baru:
+  // semua laporan kategori umum terlihat publik; kategori khusus admin tetap tertutup.
+  visibility: report.visibility === "admin" ? "admin" : "public",
 })
 
 

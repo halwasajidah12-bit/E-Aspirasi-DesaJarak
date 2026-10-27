@@ -80,7 +80,7 @@ export const removePushSubscription = (endpoint) => jsonRequest('/user/push-subs
   method: 'DELETE',
   body: JSON.stringify({ endpoint }),
 })
-export const getRewards = () => jsonRequest('/rewards')
+export const getRewards = ({ allActivities = false } = {}) => jsonRequest(`/rewards${allActivities ? '?activities=all' : ''}`)
 export const getEmailPreferences = () => jsonRequest('/user/email-preferences')
 export const updateEmailPreferences = (enabled) => jsonRequest('/user/email-preferences', {
   method: 'PUT',
@@ -101,6 +101,10 @@ export const toggleReportVote = (id) => jsonRequest(`/reports/${encodeURICompone
 export const updateReport = (id, updates) => jsonRequest(`/reports/${encodeURIComponent(id)}`, {
   method: 'PUT',
   body: JSON.stringify(updates),
+})
+
+export const withdrawReport = (id) => jsonRequest(`/reports/${encodeURIComponent(id)}`, {
+  method: 'DELETE',
 })
 
 export const addReportComment = (id, comment) => jsonRequest(`/reports/${encodeURIComponent(id)}/comments`, {
