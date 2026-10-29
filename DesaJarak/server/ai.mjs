@@ -72,7 +72,7 @@ const DUPLICATE_STOPWORDS = new Set([
   "yang", "dan", "di", "ke", "dari", "untuk", "pada", "ini", "itu", "dengan",
   "ada", "adalah", "sudah", "belum", "tidak", "bukan", "saya", "kami", "warga",
   "agar", "juga", "bisa", "akan", "para", "serta", "karena", "sehingga", "saat",
-  "seperti", "masih", "telah", "hanya", "lebih", "akan", "apa", "dimana", "di mana",
+  "seperti", "masih", "telah", "hanya", "lebih", "apa", "maka", "dimana", "di mana",
 ]);
 
 export const tokenize = (text) =>
@@ -178,7 +178,7 @@ Sertakan HANYA kandidat yang benar-benar duplikat. Jika tidak ada yang duplikat,
 
 const NEGATIVE_SENTIMENT_WORDS = [
   "rusak", "parah", "lambat", "kecewa", "bahaya", "bocor", "macet", "mati",
-  "banjir", "roboh", "ambruk", "kotor", "bau", "lumayan buruk", "seret",
+  "banjir", "roboh", "ambruk", "kotor", "bau", "buruk", "seret",
   "buruk", "tertunda", "mengancam", "kritis", "gelap", "sempit", "tersumbat",
 ];
 

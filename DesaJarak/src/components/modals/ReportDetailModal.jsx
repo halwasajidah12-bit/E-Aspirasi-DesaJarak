@@ -196,7 +196,7 @@ export default function ReportDetailModal({ report, onClose, onSave, onAnalysisP
                   disabled={analyzing}
                   className="text-[10px] font-semibold text-amber-700 underline disabled:opacity-60"
                 >
-                  {analyzing ? 'Menganalisis...' : analysis.persisted ? 'Analisis ulang' : 'Analisis ulang'}
+                  {analyzing ? 'Menganalisis...' : 'Analisis ulang'}
                 </button>
               </div>
             ) : comments.length ? (

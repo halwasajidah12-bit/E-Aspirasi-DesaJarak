@@ -1112,7 +1112,7 @@ const handleApi = async (request, response, url) => {
     const message = String(body.message || "").trim().slice(0, 1000);
     if (!message) return sendJson(response, 400, { message: "Tulis pertanyaan terlebih dahulu." });
     const reportResult = await pool.query("SELECT data_value FROM app_data WHERE data_key = 'reports'");
-     const availableReports = reportResult.rows[0]?.data_value || [];
+    const availableReports = reportResult.rows[0]?.data_value || [];
     const reportContext = availableReports.map(({ id, title, status, category }) => ({ id, title, status, category }));
     const adminScope = isAdmin(principal);
     const assistantProfile = {

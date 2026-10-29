@@ -164,7 +164,7 @@ test("computePriorityScore menaikkan laporan mendesak dan tetap dalam rentang 0-
   const urgent = computePriorityScore(
     {
       id: "JR-1",
-      title: "Jembatan ambrol",
+      title: "Jembatan roboh",
       urgency: "Tinggi",
       votes: 25,
       submittedAt: new Date(now - 6 * 86_400_000).toISOString(),
@@ -214,7 +214,7 @@ test("summarizePrioritiesWithGemini dengan client null fallback array kosong", a
 
 test("summarizePrioritiesWithGemini memetakan ringkasan per laporan dan membuang id asing", async () => {
   const items = [
-    { reportId: "JR-1", title: "Jembatan ambrol" },
+    { reportId: "JR-1", title: "Jembatan roboh" },
     { reportId: "JR-2", title: "Lampu mati" },
   ];
   const ai = stubAI(() =>
