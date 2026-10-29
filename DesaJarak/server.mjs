@@ -19,7 +19,12 @@ import { beritaData } from "./src/user/data/berita.js";
 import { edukasiList } from "./src/user/data/edukasi.js";
 import { laporanData } from "./src/user/data/laporan.js";
 import { profilDesa } from "./src/user/data/profilDesa.js";
-import { classifyReportWithGemini, fallbackCategories } from "./server/ai.mjs";
+import {
+  classifyReportWithGemini,
+  fallbackCategories,
+  findDuplicateCandidates,
+  verifyDuplicatesWithGemini,
+} from "./server/ai.mjs";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const port = Number(process.env.PORT || 4173);
@@ -1189,6 +1194,67 @@ const handleApi = async (request, response, url) => {
       }));
     return sendJson(response, 200, reports);
   }
+  if (request.method === "POST" && pathname === "/api/ai/duplicate-check") {
+    if (!principal) return sendJson(response, 401, { message: "Masuk ke akun untuk memeriksa duplikasi laporan." });
+    const body = await readJson(request);
+    const judul = String(body.judul || "").trim();
+    const deskripsi = String(body.deskripsi || "").trim();
+    const lokasi = String(body.lokasi || "").trim();
+    if (!judul && !deskripsi) {
+      return sendJson(response, 400, { message: "Judul atau deskripsi diperlukan untuk pemeriksaan duplikasi." });
+    }
+    const reportResult = await pool.query("SELECT data_value FROM app_data WHERE data_key = 'reports'");
+    const reports = reportResult.rows[0]?.data_value || [];
+    // Level 1 (murah, tanpa LLM): filter kandidat via kemiripan teks + lokasi.
+    const candidates = findDuplicateCandidates(
+      { title: judul, description: deskripsi, location: lokasi, rt: body.rt, rw: body.rw },
+      reports,
+      { limit: 3, minSimilarity: 0.25 },
+    );
+    if (!candidates.length) {
+      return sendJson(response, 200, { hasDuplicate: false, checkedAgainst: reports.length, duplicates: [] });
+    }
+    const shaped = candidates.map(({ report, similarity }) => ({
+      reportId: report.id,
+      similarity: Math.round(similarity * 100) / 100,
+      title: report.title,
+      status: report.status,
+      location: report.location || "",
+    }));
+    // Level 2 (Gemini): finalisasi hanya kandidat yang benar-benar duplikat.
+    const verified = await verifyDuplicatesWithGemini(
+      ai,
+      { title: judul, description: deskripsi, location: lokasi },
+      shaped,
+    );
+    let duplicates;
+    if (verified.length) {
+      const byId = new Map(shaped.map((candidate) => [candidate.reportId, candidate]));
+      duplicates = verified
+        .map((item) => {
+          const candidate = byId.get(item.reportId);
+          return candidate
+            ? { ...candidate, confidence: item.confidence, reason: item.reason, verified: true }
+            : null;
+        })
+        .filter(Boolean);
+    } else {
+      // Fallback: kandidat dengan skor tinggi dianggap "mungkin duplikat" (verifikasi lokal).
+      duplicates = shaped
+        .filter((candidate) => candidate.similarity >= 0.55)
+        .map((candidate) => ({
+          ...candidate,
+          confidence: candidate.similarity,
+          reason: "Kemiripan teks dan lokasi tinggi (pemeriksaan lokal).",
+          verified: false,
+        }));
+    }
+    if (!duplicates.length) {
+      return sendJson(response, 200, { hasDuplicate: false, checkedAgainst: reports.length, duplicates: [] });
+    }
+    return sendJson(response, 200, { hasDuplicate: true, checkedAgainst: reports.length, duplicates });
+  }
+
   if (request.method === "POST" && pathname === "/api/reports") {
     if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk mengirim aspirasi." });
     const body = await readJson(request);
@@ -1219,6 +1285,19 @@ const handleApi = async (request, response, url) => {
 
     const report = await mutateReports((items) => {
       const id = `JR-${String(Date.now()).slice(-6)}`;
+      // Penandaan duplikasi lokal (tanpa LLM, biar submission tetap cepat).
+      const duplicateCandidates = findDuplicateCandidates(
+        {
+          title: String(body.judul).trim(),
+          description: String(body.deskripsi).trim(),
+          location: String(body.lokasi).trim(),
+          rt: body.rt,
+          rw: body.rw,
+        },
+        items,
+        { limit: 1, minSimilarity: 0.5 },
+      );
+      const topDuplicate = duplicateCandidates[0] || null;
       const latitude = Number(body.latitude);
       const longitude = Number(body.longitude);
       const hasCoordinates = body.latitude !== undefined && body.latitude !== null && body.latitude !== "" && body.longitude !== undefined && body.longitude !== null && body.longitude !== "";
@@ -1232,6 +1311,13 @@ const handleApi = async (request, response, url) => {
         visibility: "public",
         category: categoryMap[body.kategori] || body.kategori || "Lainnya",
         aiCategory,
+        aiDuplicateOf: topDuplicate
+          ? {
+              reportId: topDuplicate.report.id,
+              similarity: Math.round(topDuplicate.similarity * 100) / 100,
+              verified: false,
+            }
+          : null,
         status: "Masuk",
         urgency: detectReportUrgency({ title: body.judul, description: body.deskripsi }) ? "Tinggi" : "Sedang",
         votes: 0,

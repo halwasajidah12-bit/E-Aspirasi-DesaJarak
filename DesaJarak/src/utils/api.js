@@ -153,6 +153,12 @@ export const askAssistant = (message) => jsonRequest('/assistant', {
   body: JSON.stringify({ message }),
 });
 
+// Deteksi duplikasi: bandingkan draf laporan dengan laporan yang sudah ada
+export const checkDuplicates = (draft) => jsonRequest('/ai/duplicate-check', {
+  method: 'POST',
+  body: JSON.stringify(draft),
+});
+
 export const updateEmailPreferences = (enabled) => jsonRequest("/user/email-preferences", {
   method: "PUT",
   body: JSON.stringify({ enabled }),

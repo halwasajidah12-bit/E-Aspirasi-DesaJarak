@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, ScanLine, Camera } from "lucide-react";
-import { createReport, getCategories, uploadImage } from "../../utils/api.js";
+import { createReport, getCategories, uploadImage, checkDuplicates } from "../../utils/api.js";
 
 const MAX_PHOTO_SIZE = 5 * 1024 * 1024;
 const PHOTO_TYPES = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"]);
@@ -85,6 +85,7 @@ function Aspirasi({ session }) {
   const [photoBusy, setPhotoBusy] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [duplicateWarning, setDuplicateWarning] = useState(null);
   const [scanActive, setScanActive] = useState(false);
   const [scanError, setScanError] = useState("");
   const [scanMessage, setScanMessage] = useState("");
@@ -255,6 +256,53 @@ function Aspirasi({ session }) {
     "Sampaikan Aspirasi/Pengaduan",
     "Laporkan masalah melalui form",
   ];
+
+  const sendReport = async () => {
+    setSubmitting(true);
+    try {
+      const image = photo ? (await uploadImage(photo)).image : "";
+      await createReport({ ...form, image }, { ownerId: session?.userId, ownerName: session?.name });
+      navigate("/lacak");
+    } catch (error) {
+      setSubmitError(error.message || "Laporan gagal dikirim.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Tombol "Kirim Laporan": cek duplikasi dulu, tampilkan peringatan bila ada
+  // laporan serupa, dan tetap kirim hanya setelah warga mengonfirmasi.
+  const handleSubmitClick = async () => {
+    setSubmitError("");
+    if (step === 0 && !form.lokasi.trim()) return setSubmitError("Lokasi laporan wajib diisi.");
+    if (step === 1 && (!form.judul.trim() || !form.kategori || !form.deskripsi.trim())) {
+      return setSubmitError("Judul, kategori, dan deskripsi laporan wajib diisi.");
+    }
+    if (step < 2) return setStep((s) => s + 1);
+    if (session?.role === "guest") return setSubmitError("Masuk atau buat akun warga sebelum mengirim laporan.");
+    // Sudah dikonfirmasi lewat panel peringatan → langsung kirim.
+    if (duplicateWarning) return sendReport();
+    setSubmitting(true);
+    try {
+      const check = await checkDuplicates({
+        judul: form.judul,
+        deskripsi: form.deskripsi,
+        lokasi: form.lokasi,
+        rt: form.rt,
+        rw: form.rw,
+      }).catch(() => null);
+      const duplicates = check?.duplicates || [];
+      if (duplicates.length) {
+        setDuplicateWarning(duplicates);
+        return;
+      }
+      await sendReport();
+    } catch (error) {
+      setSubmitError(error.message || "Gagal memeriksa duplikasi laporan.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <div className="px-4 sm:px-6 py-4 pb-8 space-y-3.5">
@@ -441,25 +489,7 @@ function Aspirasi({ session }) {
             </button>
           )}
           <button
-            onClick={async () => {
-              setSubmitError("")
-              if (step === 0 && !form.lokasi.trim()) return setSubmitError("Lokasi laporan wajib diisi.")
-              if (step === 1 && (!form.judul.trim() || !form.kategori || !form.deskripsi.trim())) {
-                return setSubmitError("Judul, kategori, dan deskripsi laporan wajib diisi.")
-              }
-              if (step < 2) return setStep((s) => s + 1)
-              if (session?.role === "guest") return setSubmitError("Masuk atau buat akun warga sebelum mengirim laporan.")
-              setSubmitting(true)
-              try {
-                const image = photo ? (await uploadImage(photo)).image : ""
-                await createReport({ ...form, image }, { ownerId: session?.userId, ownerName: session?.name })
-                navigate("/lacak")
-              } catch (error) {
-                setSubmitError(error.message || "Laporan gagal dikirim.")
-              } finally {
-                setSubmitting(false)
-              }
-            }}
+            onClick={handleSubmitClick}
             disabled={submitting || photoBusy}
             className={`flex-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white py-3 text-xs font-bold shadow-md transition active:scale-95 disabled:opacity-60 ${
               step === 0 ? "w-full" : ""
@@ -468,6 +498,44 @@ function Aspirasi({ session }) {
             {photoBusy ? "Memproses foto..." : submitting ? "Mengirim..." : step < 2 ? "Lanjutkan" : "Kirim Laporan"}
           </button>
         </div>
+
+        {duplicateWarning && (
+          <div className="mt-4 rounded-xl bg-amber-50 border border-amber-300 px-3 py-3 space-y-2" role="alert">
+            <p className="text-xs font-bold text-amber-800">&#9888;&#65039; Laporan serupa terdeteksi</p>
+            {duplicateWarning.map((item) => (
+              <div key={item.reportId} className="rounded-lg bg-white border border-amber-200 px-2.5 py-2 text-[11px] text-gray-700 space-y-0.5">
+                <p className="font-semibold text-gray-800">
+                  {item.title} <span className="text-gray-400">({item.reportId} &middot; {item.status})</span>
+                </p>
+                {item.location && <p>Lokasi: {item.location}</p>}
+                <p className="text-amber-700">
+                  Kemiripan {Math.round((item.similarity ?? 0) * 100)}%{item.verified ? " &middot; dikonfirmasi AI" : " (pemeriksaan lokal)"}
+                  {item.reason ? ` — ${item.reason}` : ""}
+                </p>
+              </div>
+            ))}
+            <p className="text-[11px] text-gray-600">
+              Cek dulu menu <span className="font-semibold">Lacak Laporan</span> agar tidak ada pengaduan ganda. Tetap kirim hanya jika masalah Anda memang berbeda atau lebih parah.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => { setDuplicateWarning(null); sendReport(); }}
+                disabled={submitting}
+                className="flex-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white py-2 text-xs font-bold transition active:scale-95 disabled:opacity-60"
+              >
+                {submitting ? "Mengirim..." : "Tetap Kirim"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setDuplicateWarning(null)}
+                className="flex-1 rounded-lg border border-amber-400 text-amber-800 hover:bg-amber-100 py-2 text-xs font-semibold"
+              >
+                Periksa Kembali
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
