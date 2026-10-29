@@ -173,3 +173,148 @@ Sertakan HANYA kandidat yang benar-benar duplikat. Jika tidak ada yang duplikat,
     return [];
   }
 };
+
+// ==== ANALISIS SENTIMEN KOMENTAR (ADMIN) ====
+
+const NEGATIVE_SENTIMENT_WORDS = [
+  "rusak", "parah", "lambat", "kecewa", "bahaya", "bocor", "macet", "mati",
+  "banjir", "roboh", "ambruk", "kotor", "bau", "lumayan buruk", "seret",
+  "buruk", "tertunda", "mengancam", "kritis", "gelap", "sempit", "tersumbat",
+];
+
+// Analisis heuristik lokal (fallback saat Gemini gagal/tanpa API key).
+export const analyzeCommentsLocally = (comments = []) => {
+  const texts = comments
+    .map((comment) => String(comment?.text || "").trim())
+    .filter(Boolean);
+  if (!texts.length) return null;
+  const joined = texts.join(" ").toLowerCase();
+  const negativeHits = NEGATIVE_SENTIMENT_WORDS.filter((word) => joined.includes(word));
+  const sentiment = negativeHits.length >= 2 ? "Negatif" : negativeHits.length === 1 ? "Netral" : "Positif";
+  const clip = (text) => (text.length > 140 ? `${text.slice(0, 137)}...` : text);
+  const keyPoints = [...new Set(texts)].slice(0, 2).map(clip);
+  return { sentiment, keyPoints, attentionPoints: [], mode: "lokal" };
+};
+
+// Analisis penuh via Gemini: sentimen + poin utama + hal yang perlu direspons admin.
+export const analyzeCommentsWithGemini = async (
+  ai,
+  { title = "", description = "", comments = [] },
+  { model = "gemini-3.5-flash-lite", timeoutMs = DEFAULT_TIMEOUT_MS } = {},
+) => {
+  if (!ai || !comments.length) return null;
+  try {
+    const result = await withTimeout(
+      ai.models.generateContent({
+        model,
+        contents: `
+Kamu analis opini publik untuk ADMIN Desa Jarak.
+
+Laporan: "${title}"
+Deskripsi: "${description}"
+
+Komentar warga:
+${JSON.stringify(comments)}
+
+Analisis komentar tersebut lalu balas HANYA JSON, tanpa penjelasan:
+{"sentiment": "Positif" | "Netral" | "Negatif",
+ "keyPoints": ["maksimal 5 poin utama dari warga, satu kalimat per poin"],
+ "attentionPoints": ["hal yang perlu segera direspons admin; boleh array kosong"]}`,
+      }),
+      "Gemini comment analysis",
+      timeoutMs,
+    );
+    const text = String(result.text || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start === -1 || end === -1 || end <= start) return null;
+    const parsed = JSON.parse(text.slice(start, end + 1));
+    const sentiment = ["Positif", "Netral", "Negatif"].includes(parsed.sentiment) ? parsed.sentiment : null;
+    if (!sentiment) return null;
+    const cleanList = (value) =>
+      Array.isArray(value) ? value.map((item) => String(item).trim()).filter(Boolean) : [];
+    return {
+      sentiment,
+      keyPoints: cleanList(parsed.keyPoints).slice(0, 5),
+      attentionPoints: cleanList(parsed.attentionPoints).slice(0, 5),
+      mode: "ai",
+    };
+  } catch (error) {
+    console.error("Gemini comment analysis gagal:", error.message);
+    return null;
+  }
+};
+
+// ==== PRIORITAS & RINGKASAN (ADMIN) ====
+// Skor prioritas dihitung DETERMINISTIK (bukan oleh LLM) agar transparan dan
+// konsisten; LLM hanya menulis ringkasan naratif per laporan.
+export const computePriorityScore = (report, { now = Date.now() } = {}) => {
+  const comments = report?.commentsList || [];
+  const analysis =
+    (report?.aiSentiment && { sentiment: report.aiSentiment }) ||
+    analyzeCommentsLocally(comments) ||
+    { sentiment: "Netral" };
+  const sentimentLabel = analysis.sentiment || "Netral";
+  const sentimentWeight = sentimentLabel === "Negatif" ? 1 : sentimentLabel === "Positif" ? 0 : 0.4;
+  const urgencyWeight = report?.urgency === "Tinggi" ? 1 : report?.urgency === "Rendah" ? 0.1 : 0.4;
+  const ageDays = report?.submittedAt
+    ? Math.max(0, Math.min(7, (now - new Date(report.submittedAt).getTime()) / 86_400_000))
+    : 0;
+  const votes = Math.max(0, Number(report?.votes) || 0);
+  const votesNorm = Math.min(20, votes) / 20;
+  const commentsNorm = Math.min(10, comments.length) / 10;
+  const breakdown = {
+    votes: Math.round(35 * votesNorm),
+    urgency: Math.round(25 * urgencyWeight),
+    comments: Math.round(20 * commentsNorm),
+    sentiment: Math.round(15 * sentimentWeight),
+    age: Math.round(5 * (ageDays / 7)),
+  };
+  const duplicateBonus = report?.aiDuplicateOf ? 3 : 0;
+  const score = Math.min(
+    100,
+    breakdown.votes + breakdown.urgency + breakdown.comments + breakdown.sentiment + breakdown.age + duplicateBonus,
+  );
+  return { score, breakdown, sentiment: sentimentLabel, votes, commentCount: comments.length };
+};
+
+export const summarizePrioritiesWithGemini = async (
+  ai,
+  items,
+  { model = "gemini-3.5-flash-lite", timeoutMs = DEFAULT_TIMEOUT_MS } = {},
+) => {
+  if (!ai || !items.length) return [];
+  try {
+    const result = await withTimeout(
+      ai.models.generateContent({
+        model,
+        contents: `
+Kamu asisten admin Desa Jarak. Untuk tiap laporan berikut (sudah diurutkan prioritas
+oleh sistem secara deterministik), tulis ringkasan penanganan singkat (maksimal 2
+kalimat): kondisi masalah sesuai data, tingkat kepulihan, dan saran langkah konkret.
+
+Data laporan (score & breakdown jangan diubah, hanya dibaca):
+${JSON.stringify(items)}
+
+Balas HANYA JSON array, tanpa penjelasan:
+[{"reportId": "<id>", "ringkasan": "<maksimal 2 kalimat>"}]`,
+      }),
+      "Gemini priorities summary",
+      timeoutMs,
+    );
+    const text = String(result.text || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+    const start = text.indexOf("[");
+    const end = text.lastIndexOf("]");
+    if (start === -1 || end === -1 || end <= start) return [];
+    const parsed = JSON.parse(text.slice(start, end + 1));
+    if (!Array.isArray(parsed)) return [];
+    const itemIds = new Set(items.map((item) => String(item.reportId)));
+    return parsed
+      .filter((item) => itemIds.has(String(item?.reportId)))
+      .map((item) => ({ reportId: String(item.reportId), ringkasan: String(item.ringkasan || "").trim().slice(0, 320) }))
+      .filter((item) => item.ringkasan);
+  } catch (error) {
+    console.error("Gemini priorities summary gagal:", error.message);
+    return [];
+  }
+};

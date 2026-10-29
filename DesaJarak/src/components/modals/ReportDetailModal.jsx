@@ -1,17 +1,56 @@
 import { useState, useEffect } from 'react'
 import { StatusBadge, UrgencyBadge } from '../../utils/badges.jsx'
 import ProtectedImage from '../../user/components/ProtectedImage.jsx'
+import { analyzeReportComments } from '../../utils/api'
 
-export default function ReportDetailModal({ report, onClose, onSave }) {
+export default function ReportDetailModal({ report, onClose, onSave, onAnalysisPersisted }) {
   const [status, setStatus] = useState('Masuk')
   const [reply, setReply] = useState('')
+  const [analysis, setAnalysis] = useState(null)
+  const [analyzing, setAnalyzing] = useState(false)
+  const [analysisError, setAnalysisError] = useState('')
 
   useEffect(() => {
     if (report) {
       setStatus(report.status)
       setReply(report.officialReply || '')
+      // Hasil analisis yang pernah tersimpan langsung tampil tanpa analisis ulang.
+      setAnalysis(
+        Array.isArray(report.aiKeyPoints) && report.aiKeyPoints.length
+          ? {
+              sentiment: report.aiSentiment,
+              keyPoints: report.aiKeyPoints,
+              attentionPoints: report.aiAttentionPoints || [],
+              persisted: true,
+            }
+          : null,
+      )
+      setAnalysisError('')
+      setAnalyzing(false)
     }
   }, [report?.id])
+
+  const runAnalysis = async () => {
+    if (!report || analyzing) return
+    setAnalyzing(true)
+    setAnalysisError('')
+    try {
+      const data = await analyzeReportComments(report.id)
+      const nextAnalysis = { ...data, persisted: false }
+      setAnalysis(nextAnalysis)
+      // Sinkronkan ke daftar laporan di state AdminDashboard seketika.
+      onAnalysisPersisted?.(report.id, {
+        sentiment: data.sentiment,
+        keyPoints: data.keyPoints || [],
+        attentionPoints: data.attentionPoints || [],
+        at: new Date().toISOString(),
+      })
+    } catch (error) {
+      setAnalysisError(error.message || 'Analisis gagal. Coba lagi beberapa saat.')
+    } finally {
+      setAnalyzing(false)
+    }
+  }
 
   if (!report) return null
 
@@ -105,11 +144,80 @@ export default function ReportDetailModal({ report, onClose, onSave }) {
             </div>
           </div>
 
-          <div className="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl p-2.5 text-amber-900 space-y-1">
-            <div className="flex items-center gap-1.5 font-bold text-[11px] text-amber-800">
-              <i className="fa-solid fa-lightbulb"></i> Rekomendasi AI Response:
+          <div className="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl p-2.5 text-amber-900 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 font-bold text-[11px] text-amber-800">
+                <i className="fa-solid fa-lightbulb"></i> Analisis AI Komentar
+              </div>
+              {analysis?.sentiment && (
+                <span
+                  className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                    analysis.sentiment === 'Negatif'
+                      ? 'bg-rose-50 text-rose-700 border-rose-200'
+                      : analysis.sentiment === 'Positif'
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        : 'bg-gray-50 text-gray-600 border-gray-200'
+                  }`}
+                >
+                  Sentimen: {analysis.sentiment}
+                </span>
+              )}
             </div>
-            <p className="text-[11px] text-amber-800/90 leading-relaxed">{report.aiSuggestion || 'Belum ada komentar warga untuk dirangkum.'}</p>
+
+            {analysis ? (
+              <div className="space-y-1.5">
+                {analysis.keyPoints?.length ? (
+                  <ul className="list-disc pl-4 space-y-0.5 text-[11px] text-amber-800/90 leading-relaxed">
+                    {analysis.keyPoints.map((point, index) => (
+                      <li key={index}>{point}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-[11px] text-amber-800/70">Tidak ada poin utama yang teridentifikasi.</p>
+                )}
+                {analysis.attentionPoints?.length ? (
+                  <div className="mt-1 bg-rose-50/60 border border-rose-100 rounded-lg p-2">
+                    <p className="text-[10px] font-bold text-rose-700 mb-0.5">Perlu perhatian admin:</p>
+                    <ul className="list-disc pl-4 space-y-0.5 text-[11px] text-rose-800/90 leading-relaxed">
+                      {analysis.attentionPoints.map((point, index) => (
+                        <li key={index}>{point}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                {report.aiSuggestion && (
+                  <p className="text-[10px] text-amber-700/80 leading-relaxed border-t border-amber-100 pt-1">
+                    Rangkuman lokal (sebelum analisis AI): {report.aiSuggestion}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  onClick={runAnalysis}
+                  disabled={analyzing}
+                  className="text-[10px] font-semibold text-amber-700 underline disabled:opacity-60"
+                >
+                  {analyzing ? 'Menganalisis...' : analysis.persisted ? 'Analisis ulang' : 'Analisis ulang'}
+                </button>
+              </div>
+            ) : comments.length ? (
+              <div className="space-y-1.5">
+                <p className="text-[11px] text-amber-800/80 leading-relaxed">
+                  {analysisError || 'Belum dianalisis. Jalankan analisis sentimen untuk melihat poin utama tanggapan warga.'}
+                </p>
+                <button
+                  type="button"
+                  onClick={runAnalysis}
+                  disabled={analyzing}
+                  className="rounded-lg bg-amber-400 hover:bg-amber-300 text-amber-950 px-2.5 py-1 text-[10px] font-bold disabled:opacity-60"
+                >
+                  {analyzing ? 'Menganalisis...' : 'Analisis Komentar'}
+                </button>
+              </div>
+            ) : (
+              <p className="text-[11px] text-amber-800/80 leading-relaxed">
+                Belum ada komentar warga untuk dirangkum.
+              </p>
+            )}
           </div>
 
           <div className="space-y-2 border-t pt-2 border-gray-100">

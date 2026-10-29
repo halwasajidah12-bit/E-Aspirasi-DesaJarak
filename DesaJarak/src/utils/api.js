@@ -159,6 +159,15 @@ export const checkDuplicates = (draft) => jsonRequest('/ai/duplicate-check', {
   body: JSON.stringify(draft),
 });
 
+// (Admin) Analisis sentimen + poin utama komentar laporan
+export const analyzeReportComments = (reportId) => jsonRequest('/ai/analyze-comments', {
+  method: 'POST',
+  body: JSON.stringify({ reportId }),
+});
+
+// (Admin) Daftar laporan terurut prioritas + ringkasan AI
+export const getPriorities = () => jsonRequest('/ai/priorities');
+
 export const updateEmailPreferences = (enabled) => jsonRequest("/user/email-preferences", {
   method: "PUT",
   body: JSON.stringify({ enabled }),

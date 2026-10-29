@@ -5,6 +5,7 @@ import BottomNav from './components/BottomNav.jsx'
 import SideNav from './components/SideNav.jsx'
 import Toast from './components/Toast.jsx'
 import AiChatWidget from './components/AiChatWidget.jsx'
+import AiPriorityPanel from './components/AiPriorityPanel.jsx'
 import NotificationModal from './components/NotificationModal.jsx'
 import ReportDetailModal from './components/modals/ReportDetailModal.jsx'
 import ProfilEditModal from './components/modals/ProfilEditModal.jsx'
@@ -139,6 +140,24 @@ export default function AdminDashboard({ adminName, onLogout }) {
     } catch (error) {
       showToast(`Gagal memperbarui laporan: ${error.message}`)
     }
+  }
+
+  // Sinkronkan hasil analisis AI ke daftar laporan di state seketika
+  // agar modal tidak menampilkan data basi saat dibuka ulang.
+  const applyAnalysisToReport = (reportId, analysis) => {
+    setReports((current) =>
+      current.map((report) =>
+        report.id === reportId
+          ? {
+              ...report,
+              aiSentiment: analysis.sentiment,
+              aiKeyPoints: analysis.keyPoints || [],
+              aiAttentionPoints: analysis.attentionPoints || [],
+              aiAnalysisAt: analysis.at || new Date().toISOString(),
+            }
+          : report,
+      ),
+    )
   }
 
   // --- Profil actions ---
@@ -316,6 +335,7 @@ export default function AdminDashboard({ adminName, onLogout }) {
             onUpdateReportStatus={updateReportStatus}
           />
         )}
+        {activeTab === 'beranda' && <AiPriorityPanel onOpenReportDetail={openReportDetail} />}
         {activeTab === 'laporan' && (
           <Laporan reports={reports} onOpenReportDetail={openReportDetail} onUpdateReportStatus={updateReportStatus} />
         )}
@@ -349,7 +369,7 @@ export default function AdminDashboard({ adminName, onLogout }) {
 
       <ProfilEditModal visible={profilEditOpen} profil={profil} onClose={() => setProfilEditOpen(false)} onSave={saveProfil} />
 
-      <ReportDetailModal report={activeReport} onClose={closeReportDetail} onSave={saveReportDetail} />
+      <ReportDetailModal report={activeReport} onClose={closeReportDetail} onSave={saveReportDetail} onAnalysisPersisted={applyAnalysisToReport} />
 
       <EdukasiModal
         visible={edukasiModalOpen}

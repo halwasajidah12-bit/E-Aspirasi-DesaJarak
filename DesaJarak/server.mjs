@@ -24,6 +24,10 @@ import {
   fallbackCategories,
   findDuplicateCandidates,
   verifyDuplicatesWithGemini,
+  analyzeCommentsWithGemini,
+  analyzeCommentsLocally,
+  summarizePrioritiesWithGemini,
+  computePriorityScore,
 } from "./server/ai.mjs";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
@@ -1253,6 +1257,101 @@ const handleApi = async (request, response, url) => {
       return sendJson(response, 200, { hasDuplicate: false, checkedAgainst: reports.length, duplicates: [] });
     }
     return sendJson(response, 200, { hasDuplicate: true, checkedAgainst: reports.length, duplicates });
+  }
+
+  if (request.method === "POST" && pathname === "/api/ai/analyze-comments") {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
+    const body = await readJson(request);
+    const reportId = String(body.reportId || "").trim();
+    if (!reportId) return sendJson(response, 400, { message: "reportId diperlukan." });
+    const reportResult = await pool.query("SELECT data_value FROM app_data WHERE data_key = 'reports'");
+    const reports = reportResult.rows[0]?.data_value || [];
+    const report = reports.find((item) => String(item.id) === reportId);
+    if (!report) return sendJson(response, 404, { message: "Laporan tidak ditemukan." });
+    const comments = (report.commentsList || [])
+      .map((comment) => ({ name: comment.name, text: comment.text }));
+    if (!comments.length) return sendJson(response, 400, { message: "Belum ada komentar warga pada laporan ini." });
+
+    const analysis =
+      (await analyzeCommentsWithGemini(ai, {
+        title: report.title,
+        description: report.description,
+        comments,
+      })) || analyzeCommentsLocally(comments);
+    if (!analysis?.sentiment) {
+      return sendJson(response, 502, { message: "Analisis gagal. Coba lagi beberapa saat." });
+    }
+
+    // Simpan hasil agar tidak dianalisis ulang setiap kali modal dibuka.
+    const persisted = await mutateReports((items) => {
+      const current = items.find((item) => String(item.id) === reportId);
+      if (!current) return null;
+      const next = {
+        ...current,
+        aiSentiment: analysis.sentiment,
+        aiKeyPoints: analysis.keyPoints || [],
+        aiAttentionPoints: analysis.attentionPoints || [],
+        aiAnalysisAt: new Date().toISOString(),
+      };
+      return { reports: items.map((item) => (String(item.id) === reportId ? next : item)), value: next };
+    });
+
+    return sendJson(response, 200, {
+      reportId: persisted?.id || reportId,
+      ...analysis,
+    });
+  }
+
+  if (request.method === "GET" && pathname === "/api/ai/priorities") {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
+    const reportResult = await pool.query("SELECT data_value FROM app_data WHERE data_key = 'reports'");
+    const reports = (reportResult.rows[0]?.data_value || []).filter(
+      (report) => !["Selesai", "Ditolak"].includes(report.status),
+    );
+    if (!reports.length) {
+      return sendJson(response, 200, { generatedAt: new Date().toISOString(), priorityList: [] });
+    }
+
+    // Skor prioritas deterministik (transparan): votes 35% + urgensi 25% +
+    // komentar 20% + sentimen 15% + umur laporan 5% (+3 bonus bila duplikat).
+    const scored = reports.map((report) => {
+      const { score, breakdown, sentiment: sentimentLabel, votes, commentCount } = computePriorityScore(report, {
+        now: Date.now(),
+      });
+      const alasanParts = [
+        `${votes} vote dukungan`,
+        `urgensi ${report.urgency || "Sedang"}`,
+        `${commentCount} komentar warga`,
+        `sentimen ${sentimentLabel.toLowerCase()}`,
+      ];
+      return {
+        reportId: report.id,
+        title: report.title,
+        status: report.status,
+        urgency: report.urgency || "Sedang",
+        category: report.category,
+        votes,
+        commentCount,
+        sentiment: sentimentLabel,
+        score,
+        breakdown,
+        duplicateOf: report.aiDuplicateOf?.reportId || null,
+        alasan: alasanParts.join(", "),
+        description: String(report.description || "").slice(0, 240),
+      };
+    });
+
+    const top = scored.sort((a, b) => b.score - a.score || a.reportId.localeCompare(b.reportId)).slice(0, 8);
+    const summaries = await summarizePrioritiesWithGemini(ai, top);
+    const summaryMap = new Map(summaries.map((item) => [item.reportId, item.ringkasan]));
+    const priorityList = top.map((item) => ({
+      ...item,
+      description: undefined,
+      ringkasan:
+        summaryMap.get(item.reportId) ||
+        `${item.title} (${item.urgency}). ${item.description}${item.description.length >= 240 ? "..." : ""}`,
+    }));
+    return sendJson(response, 200, { generatedAt: new Date().toISOString(), priorityList });
   }
 
   if (request.method === "POST" && pathname === "/api/reports") {
