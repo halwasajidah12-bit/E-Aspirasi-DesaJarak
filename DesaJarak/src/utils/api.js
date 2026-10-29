@@ -147,6 +147,12 @@ export const uploadImage = async (file) => {
 
 export const getEmailPreferences = () => jsonRequest("/user/email-preferences");
 
+// Asisten AI (warga & admin beda konteks di server berdasarkan token)
+export const askAssistant = (message) => jsonRequest('/assistant', {
+  method: 'POST',
+  body: JSON.stringify({ message }),
+});
+
 export const updateEmailPreferences = (enabled) => jsonRequest("/user/email-preferences", {
   method: "PUT",
   body: JSON.stringify({ enabled }),

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { askAssistant } from '../utils/api'
 
 const QUICK_QUESTIONS = [
   { label: 'Cek Urgensi Tinggi', text: 'Berapa jumlah laporan urgensi tinggi hari ini?' },
@@ -6,32 +7,28 @@ const QUICK_QUESTIONS = [
   { label: 'Saran Tanggapan AI', text: 'Buatkan saran tanggapan untuk jembatan rusak' },
 ]
 
-function buildReply(userMsg, namaDesa) {
-  const lower = userMsg.toLowerCase()
-  if (lower.includes('urgensi')) {
-    return 'Terdapat 2 laporan dengan status Urgensi Tinggi saat ini (#JR-001 dan #JR-021) terkait perbaikan fasilitas penyeberangan jalan.'
-  }
-  if (lower.includes('balas')) {
-    return "Untuk membalas laporan warga, Anda dapat mengklik tombol 'Detail' pada kartu laporan di tab 'Laporan' lalu masukkan tanggapan resmi pada form yang tersedia."
-  }
-  return `Pertanyaan '${userMsg}' telah diproses oleh AI Assistant Desa ${namaDesa}.`
-}
-
 export default function AiChatWidget({ namaDesa }) {
   const [open, setOpen] = useState(false)
   const [input, setInput] = useState('')
+  const [busy, setBusy] = useState(false)
   const [messages, setMessages] = useState([
     { role: 'ai', text: 'Halo Pak Admin! Saya Asisten AI Desa. Saya dapat membantu menganalisis duplikat laporan, menyusun tanggapan resmi, atau membuat draf berita desa. Ada yang bisa saya bantu? 😊' },
   ])
 
-  const sendMessage = (text) => {
+  const sendMessage = async (text) => {
     const value = (text ?? input).trim()
-    if (!value) return
+    if (!value || busy) return
     setMessages((prev) => [...prev, { role: 'user', text: value }])
     setInput('')
-    setTimeout(() => {
-      setMessages((prev) => [...prev, { role: 'ai', text: buildReply(value, namaDesa) }])
-    }, 600)
+    setBusy(true)
+    try {
+      const data = await askAssistant(value)
+      setMessages((prev) => [...prev, { role: 'ai', text: data.reply || 'Saya belum menemukan jawabannya, coba rumuskan pertanyaan lain.' }])
+    } catch (error) {
+      setMessages((prev) => [...prev, { role: 'ai', text: error.message || 'Asisten AI sedang tidak tersedia. Coba lagi beberapa saat.' }])
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -75,6 +72,13 @@ export default function AiChatWidget({ namaDesa }) {
               </div>
             )
           )}
+          {busy && (
+            <div className="bg-emerald-50 text-emerald-400 p-2.5 rounded-2xl rounded-tl-none max-w-[85%] border border-emerald-100 flex items-center gap-1 px-4 py-3">
+              <span className="h-1.5 w-1.5 rounded-full bg-gray-400 animate-bounce [animation-delay:-0.3s]" />
+              <span className="h-1.5 w-1.5 rounded-full bg-gray-400 animate-bounce [animation-delay:-0.15s]" />
+              <span className="h-1.5 w-1.5 rounded-full bg-gray-400 animate-bounce" />
+            </div>
+          )}
         </div>
 
         <div className="p-2 border-t border-gray-100 bg-gray-50 overflow-x-auto no-scrollbar flex gap-1.5 text-[10px]">
@@ -98,9 +102,17 @@ export default function AiChatWidget({ namaDesa }) {
             placeholder="Kirim pesan ke AI..."
             className="flex-1 text-xs bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 focus:outline-none focus:border-emerald-500"
           />
-          <button onClick={() => sendMessage()} className="bg-emerald-600 text-white px-3.5 py-2 rounded-xl text-xs font-bold active:scale-95">
-            <i className="fa-solid fa-paper-plane"></i>
-          </button>
+          {busy
+            ? (
+              <button disabled className="bg-emerald-300 text-white px-3.5 py-2 rounded-xl text-xs font-bold cursor-not-allowed">
+                <i className="fa-solid fa-hourglass-half"></i>
+              </button>
+            )
+            : (
+              <button onClick={() => sendMessage()} className="bg-emerald-600 text-white px-3.5 py-2 rounded-xl text-xs font-bold active:scale-95">
+                <i className="fa-solid fa-paper-plane"></i>
+              </button>
+            )}
         </div>
       </div>
     </>

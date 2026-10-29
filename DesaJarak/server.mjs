@@ -19,6 +19,7 @@ import { beritaData } from "./src/user/data/berita.js";
 import { edukasiList } from "./src/user/data/edukasi.js";
 import { laporanData } from "./src/user/data/laporan.js";
 import { profilDesa } from "./src/user/data/profilDesa.js";
+import { classifyReportWithGemini, fallbackCategories } from "./server/ai.mjs";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const port = Number(process.env.PORT || 4173);
@@ -83,46 +84,17 @@ const resolveVoteBaseline = (report) => {
   return Math.max(0, toFiniteNumber(report.votes) ?? 0);
 };
 
-const classifyReportWithGemini = async (description) => {
-  if (!ai) return null;
+// Daftar kategori untuk klasifikasi AI, source of truth: tabel kategori_infrastruktur.
+// Fallback konsisten dengan default di GET /api/categories (lihat server/ai.mjs).
+const loadAllowedCategories = async () => {
   try {
-    const result = await ai.models.generateContent({
-      model: 'gemini-3.5-flash-lite',
-      contents: `
-Klasifikasikan laporan masyarakat berikut ke dalam tepat satu kategori:
-
-- Jalan
-- Drainase
-- Penerangan
-- Jembatan
-- Fasilitas Umum
-
-Deskripsi laporan:
-"${description}"
-
-Balas HANYA dengan nama kategorinya.
-`,
-    })
-
-    const category = result.text.trim()
-
-    const allowedCategories = [
-      "Jalan",
-      "Drainase",
-      "Penerangan",
-      "Jembatan",
-      "Fasilitas Umum",
-    ]
-
-    return allowedCategories.includes(category)
-      ? category
-      : null
-
-  } catch (error) {
-    console.error("Gemini classification gagal:", error)
-    return null
+    const result = await pool.query("SELECT nama_kategori FROM kategori_infrastruktur ORDER BY id ASC");
+    const list = result.rows.map((row) => row.nama_kategori).filter(Boolean);
+    return list.length ? list : fallbackCategories;
+  } catch {
+    return fallbackCategories;
   }
-}
+};
 
 const loadEnv = () => {
   const envPaths = [join(process.cwd(), ".env"), join(root, ".env")];
@@ -1106,17 +1078,25 @@ const handleApi = async (request, response, url) => {
     await pool.query("UPDATE notifications SET read_at = $1 WHERE read_at IS NULL", [readAt]);
     return sendJson(response, 200, { ok: true, readAt });
   }
-if (request.method === "GET" && pathname === "/api/ai/classify-test") {
-  const description = "Toilet umum di balai desa rusak dan tidak dapat digunakan.";
-
-  const category = await classifyReportWithGemini(description);
-
-  return sendJson(response, 200, {
-    success: true,
-    description,
-    category: category || "Belum diklasifikasi",
-  });
-}
+  if (request.method === "GET" && pathname === "/api/ai/classify-test") {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
+    const title = String(searchParams.get("judul") || "");
+    const description =
+      String(searchParams.get("deskripsi") || "").trim() ||
+      "Toilet umum di balai desa rusak dan tidak dapat digunakan.";
+    const allowedCategories = await loadAllowedCategories();
+    const category = await classifyReportWithGemini(ai, {
+      title,
+      description,
+      allowedCategories,
+    });
+    return sendJson(response, 200, {
+      success: true,
+      description,
+      allowedCategories,
+      category: category || "Belum diklasifikasi",
+    });
+  }
 
   if (request.method === "POST" && pathname === "/api/assistant") {
     const body = await readJson(request);
@@ -1125,11 +1105,21 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
     const reportResult = await pool.query("SELECT data_value FROM app_data WHERE data_key = 'reports'");
      const availableReports = reportResult.rows[0]?.data_value || [];
     const reportContext = availableReports.map(({ id, title, status, category }) => ({ id, title, status, category }));
+    const adminScope = isAdmin(principal);
+    const assistantProfile = {
+      namaDesa: profilDesa.namaDesa,
+      kecamatan: profilDesa.kecamatan,
+      kabupaten: profilDesa.kabupaten,
+      wilayahDusun: profilDesa.wilayahDusun,
+      jumlahRt: profilDesa.jumlahRt,
+      jumlahRw: profilDesa.jumlahRw,
+      totalPenduduk: profilDesa.totalPenduduk,
+    };
     if (ai) {
       try {
         const result = await ai.models.generateContent({
           model: "gemini-3.5-flash-lite",
-          contents: `Kamu asisten layanan warga Desa Jarak. Jawab singkat, sopan, dalam Bahasa Indonesia. Jangan mengarang kebijakan/nomor kontak. Jika data tidak tersedia, katakan demikian. Data aspirasi yang boleh diketahui pengguna ini: ${JSON.stringify(reportContext)}\n\nPertanyaan warga: ${message}`,
+          contents: `Kamu asisten layanan warga Desa ${assistantProfile.namaDesa}. Jawab singkat, sopan, dalam Bahasa Indonesia. Jangan mengarang kebijakan/nomor kontak. Jika data tidak tersedia, katakan demikian.\nPengguna ini adalah ${adminScope ? "ADMIN desa: boleh merangkum data internal secara lengkap, boleh membantu menyusun draf tanggapan resmi dan draf berita." : "WARGA biasa: hanya jelaskan cara memakai layanan dan informasi umum."}\nProfil desa: ${JSON.stringify(assistantProfile)}\nData aspirasi yang boleh diketahui pengguna ini: ${JSON.stringify(reportContext)}\n\nPertanyaan: ${message}`,
         });
         if (result.text?.trim()) return sendJson(response, 200, { reply: result.text.trim(), mode: "ai" });
       } catch (error) {
@@ -1207,7 +1197,6 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
         message: "Judul, lokasi, deskripsi, dan identitas pelapor wajib diisi.",
       });
     }
-const aiCategory = await classifyReportWithGemini(body.deskripsi);
     const now = new Date();
     const categoryMap = {
       Jalan: "Jalan & Fasilitas",
@@ -1218,6 +1207,15 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
       Lainya: "Lainnya",
       Lainnya: "Lainnya",
     };
+
+    const allowedCategories = await loadAllowedCategories();
+    const aiResult = await classifyReportWithGemini(ai, {
+      title: String(body.judul).trim(),
+      description: String(body.deskripsi).trim(),
+      allowedCategories,
+    });
+    // Fallback: pakai kategori pilihan manual warga (hasil categoryMap) bila AI gagal.
+    const aiCategory = aiResult || categoryMap[body.kategori] || "Lainnya";
 
     const report = await mutateReports((items) => {
       const id = `JR-${String(Date.now()).slice(-6)}`;
@@ -1233,7 +1231,7 @@ const aiCategory = await classifyReportWithGemini(body.deskripsi);
         ownerName: principal.fullname || principal.nama || "Warga Desa",
         visibility: "public",
         category: categoryMap[body.kategori] || body.kategori || "Lainnya",
-        aiCategory: aiCategory || "Belum diklasifikasi" ,
+        aiCategory,
         status: "Masuk",
         urgency: detectReportUrgency({ title: body.judul, description: body.deskripsi }) ? "Tinggi" : "Sedang",
         votes: 0,
