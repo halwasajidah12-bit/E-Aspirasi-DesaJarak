@@ -23,8 +23,8 @@ import Pengaturan from "./pages/Pengaturan";
 import AiAsisten from "./pages/AiAsisten";
 
 export default function App({ session, onLogout }) {
-  const [sidebarOpen, setSidebarOpen] = useState(false); 
-  const [collapsed, setCollapsed] = useState(false); 
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
   const { pathname } = useLocation();
   const isChatPage = pathname === "/ai-asisten";
 
@@ -43,7 +43,7 @@ export default function App({ session, onLogout }) {
         onClose={() => setSidebarOpen(false)}
         collapsed={collapsed}
         onToggleCollapse={() => setCollapsed((c) => !c)}
-        session={session} 
+        session={session}
       />
 
       <div
@@ -60,14 +60,14 @@ export default function App({ session, onLogout }) {
             <Route path="/" element={<Home />} />
             <Route path="/aspirasi" element={<Aspirasi session={session} />} />
             <Route path="/aspirasi/detail" element={<DetailAspirasi />} />
-            <Route path="/lacak" element={<LacakLaporan />} />
+            <Route path="/lacak"element={<LacakLaporan session={session} />} />
             <Route path="/lacak/:id" element={<DetailLaporan session={session} />} />
-            <Route path="/vote" element={<VotePrioritas />} />
+            <Route path="/vote" element={<VotePrioritas session={session} />} />
             <Route path="/berita" element={<BeritaDesa />} />
             <Route path="/berita/:id" element={<BeritaDetail session={session} />} />
             <Route path="/info-desa" element={<InfoDesa />} />
             <Route path="/riwayat" element={<Riwayat session={session} />} />
-            <Route path="/akun" element={<Akun session={session} />} /> 
+            <Route path="/akun" element={<Akun session={session} />} />
             <Route path="/edukasi" element={<Edukasi />} />
             <Route path="/edukasi/:slug" element={<EdukasiDetail />} />
             <Route path="/reward" element={<DetailReward />} />
@@ -75,7 +75,7 @@ export default function App({ session, onLogout }) {
             <Route path="/ai-asisten" element={<AiAsisten />} />
           </Routes>
 
-          {!isChatPage && <ChatWidget />}
+          {/*!isChatPage && <ChatWidget /> */}
         </main>
 
         {!isChatPage && <BottomNav />}

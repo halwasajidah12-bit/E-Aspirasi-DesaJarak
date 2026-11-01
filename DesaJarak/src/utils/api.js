@@ -13,6 +13,7 @@ export const login = (credentials) => jsonRequest('/auth/login', {
   body: JSON.stringify(credentials),
 })
 
+
 export const register = (user) => jsonRequest('/auth/register', {
   method: 'POST',
   body: JSON.stringify(user),
@@ -27,6 +28,12 @@ export const markNotificationsRead = () => jsonRequest('/notifications/read', {
 })
 
 export const getReports = () => jsonRequest('/reports')
+
+export const toggleReportVote = (id, ownerId) =>
+  jsonRequest(`/reports/${encodeURIComponent(id)}/vote`, {
+    method: 'POST',
+    body: JSON.stringify({ ownerId }),
+  })
 
 export const updateReport = (id, updates) => jsonRequest(`/reports/${encodeURIComponent(id)}`, {
   method: 'PUT',
@@ -110,7 +117,7 @@ export const getUserProfile = (id) => jsonRequest(`/users/${encodeURIComponent(i
 export const updateUserProfile = async (id, formData) => {
   const response = await fetch(`/api/users/${encodeURIComponent(id)}`, {
     method: 'PUT',
-    // perhtaikan cuy ini Tidak memakai headers Content-Type karena browser akan otomatis 
+    // perhtaikan cuy ini Tidak memakai headers Content-Type karena browser akan otomatis
     // mengatur 'multipart/form-data' beserta 'boundary'-nya dari objek FormData
     body: formData,
   })

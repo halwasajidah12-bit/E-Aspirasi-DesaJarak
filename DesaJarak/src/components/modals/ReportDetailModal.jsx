@@ -1,22 +1,24 @@
 import { useState, useEffect } from 'react'
 import { StatusBadge, UrgencyBadge } from '../../utils/badges.jsx'
+export default function ReportDetailModal({
+ report,
+  onClose,
+  onSave,
+  isAdmin = false,
+}) {
 
-export default function ReportDetailModal({ report, onClose, onSave }) {
   const [status, setStatus] = useState('Masuk')
   const [reply, setReply] = useState('')
-
   useEffect(() => {
     if (report) {
       setStatus(report.status)
       setReply(report.officialReply || '')
     }
   }, [report?.id])
-
   if (!report) return null
-
+  console.log("MODAL RENDER:", report?.id, report?.possibleDuplicates);
   const comments = report.commentsList || []
   const [tanggal = '-', ...rest] = (report.submittedAt || '-').split(' ')
-
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-3.5">
       <div className="bg-white w-full sm:max-w-lg rounded-2xl p-4 shadow-2xl border border-emerald-100 space-y-3 modal-scroll">
@@ -31,7 +33,6 @@ export default function ReportDetailModal({ report, onClose, onSave }) {
             <i className="fa-solid fa-xmark text-lg"></i>
           </button>
         </div>
-
         <div className="space-y-3 text-xs">
           <img src={report.image} alt="Foto Laporan" className="w-full h-40 object-cover rounded-xl border border-gray-200 shadow-inner" />
           <div className="grid grid-cols-2 gap-2">
@@ -51,17 +52,43 @@ export default function ReportDetailModal({ report, onClose, onSave }) {
               <p className="font-bold text-gray-800">{report.author}</p>
             </div>
             <div className="flex gap-1 flex-wrap justify-end">
-              <StatusBadge status={report.status} />
-              <UrgencyBadge urgency={report.urgency} />
+
+             <StatusBadge status={report.status} />
+             {isAdmin && (
+               <UrgencyBadge urgency={report.urgency} />
+)}
+
             </div>
           </div>
+          {isAdmin && report.priorityReason && (
+  <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+    <div className="flex items-center gap-2 mb-2">
+      <span className="text-amber-600">✦</span>
+      <p className="text-xs font-bold text-amber-800">
+        Analisis Prioritas AI
+      </p>
+    </div>
 
+    <p className="text-xs text-gray-700 leading-relaxed">
+      {report.priorityReason}
+    </p>
+  </div>
+)}
           <div>
             <p className="text-[10px] text-gray-400 font-semibold mb-0.5">Isi Deskripsi Laporan:</p>
             <p className="bg-emerald-50/50 p-2.5 rounded-xl text-gray-700 leading-relaxed border border-emerald-100/60">
               {report.description}
             </p>
           </div>
+
+      <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
+        <p className="text-[10px] font-semibold text-gray-500 mb-1">
+          AI Kategori
+        </p>
+        <p className="font-bold text-emerald-800">
+          {report.aiCategory || report.category || "Belum diklasifikasi"}
+        </p>
+      </div>
 
           <div className="bg-white border border-gray-100 rounded-xl p-3 shadow-sm">
             <div className="flex items-center justify-between mb-2">
@@ -87,13 +114,39 @@ export default function ReportDetailModal({ report, onClose, onSave }) {
             </div>
           </div>
 
+{report.hasPossibleDuplicate && report.possibleDuplicates?.length > 0 && (
+  <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 space-y-2">
+    <div className="flex items-center gap-2 font-bold text-rose-800 text-sm">
+      <i className="fa-solid fa-triangle-exclamation"></i>
+      Laporan Serupa Ditemukan
+    </div>
+
+    <p className="text-xs text-rose-700">
+      Ditemukan laporan dengan lokasi dan isi yang mirip. Periksa sebelum menindaklanjuti.
+    </p>
+
+    {report.possibleDuplicates
+      .filter((item) => String(item.id) !== String(report.id))
+      .slice(0, 3)
+      .map((item) => (
+        <div
+          key={item.id}
+          className="rounded-lg border border-rose-100 bg-white p-2"
+        >
+          <p className="font-bold text-sm text-gray-800">{item.title}</p>
+          <p className="text-xs text-gray-600">
+            ID: {item.id} · Lokasi: {item.location}
+          </p>
+        </div>
+      ))}
+  </div>
+)}
           <div className="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl p-2.5 text-amber-900 space-y-1">
             <div className="flex items-center gap-1.5 font-bold text-[11px] text-amber-800">
               <i className="fa-solid fa-lightbulb"></i> Rekomendasi AI Response:
             </div>
             <p className="text-[11px] text-amber-800/90 leading-relaxed">{report.aiSuggestion || 'Belum ada komentar warga untuk dirangkum.'}</p>
           </div>
-
           <div className="space-y-2 border-t pt-2 border-gray-100">
             <label className="block font-bold text-gray-700">Tindak Lanjut Status:</label>
             <select
@@ -124,5 +177,5 @@ export default function ReportDetailModal({ report, onClose, onSave }) {
         </div>
       </div>
     </div>
-  )
+  );
 }

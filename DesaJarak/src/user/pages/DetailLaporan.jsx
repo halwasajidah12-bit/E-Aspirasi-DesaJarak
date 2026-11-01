@@ -11,7 +11,7 @@ import {
   MessageCircle,
 } from "lucide-react";
 import { mapApiReport } from "../data/laporan";
-import { addReportComment, getReports } from "../../utils/api.js";
+import { addReportComment, getReports, toggleReportVote,} from "../../utils/api.js";
 
 const statusStyle = {
   Selesai: "bg-emerald-100 text-emerald-800",
@@ -52,15 +52,45 @@ export default function DetailLaporan({ session }) {
     };
   }, [id]);
 
-  const angkaAwal = Number(report?.dukungan) || 0;
+  const ownerId = session?.userId || "";
+  const didukung = (report?.voterIds || []).includes(ownerId);
+  const dukungan = Math.max(
+  Number(report?.dukungan || 0),
+  Number(report?.votes || 0),
+  (report?.voterIds || []).length
+);
 
-  const [didukung, setDidukung] = useState(false);
-  const [dukungan, setDukungan] = useState(angkaAwal);
+const [loadingVote, setLoadingVote] = useState(false);
 
-  const toggleDukungan = () => {
-    setDukungan((n) => (didukung ? n - 1 : n + 1));
-    setDidukung((v) => !v);
-  };
+const toggleDukungan = async () => {
+  if (!ownerId) {
+    alert("Silakan login terlebih dahulu untuk mendukung laporan.");
+    return;
+  }
+
+  if (loadingVote) return;
+
+  setLoadingVote(true);
+
+  try {
+    const result = await toggleReportVote(report.id, ownerId);
+
+    // Perbarui data laporan berdasarkan respons backend
+    setReport((current) => ({
+      ...current,
+      dukungan: Number(result.votes || 0),
+      voterIds: result.voterIds || (
+        result.supported
+          ? [...(current.voterIds || []), ownerId]
+          : (current.voterIds || []).filter((id) => id !== ownerId)
+      ),
+    }));
+  } catch (error) {
+    alert(error.message || "Gagal menyimpan dukungan.");
+  } finally {
+    setLoadingVote(false);
+  }
+};
 
   const bagikan = async () => {
     const url = window.location.href;

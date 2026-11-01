@@ -77,15 +77,25 @@ export const mapApiReport = (report) => ({
   rt: report.rt || "-",
   rw: report.rw || "-",
   lokasi: report.location || "-",
-  dukungan: report.votes || 0,
+  dukungan: Number(report.votes ?? report.voterIds?.length ?? 0),voterIds: report.voterIds || [],
   foto: report.image || "",
   pelapor: report.author || "Warga Desa",
   ownerId: report.ownerId || "",
   ownerName: report.ownerName || report.author || "Warga Desa",
-  komentar: report.commentsList || [],
+ comments: Number(
+  report.comments ?? report.commentsList?.length ?? 0
+),
+commentsList: report.commentsList || [],
+komentar: report.commentsList || [],
+  commentsList: report.commentsList || [],
+  jumlahKomentar: report.commentsList?.length || 0,
+  urgency: report.urgency || "Rendah",
+  priorityReason: report.priorityReason || "",
   tanggapan: report.officialReply || "",
   aiSuggestion: report.aiSuggestion || "Belum ada komentar warga.",
   statusHistory: report.statusHistory || [],
+  hasPossibleDuplicate: report.hasPossibleDuplicate ?? false,
+  possibleDuplicates: report.possibleDuplicates ?? [],
 })
 
 

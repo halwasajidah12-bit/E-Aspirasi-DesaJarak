@@ -1,20 +1,20 @@
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react' // sesuaikan jika pakai react/vue
 
-const apiProxyTarget = process.env.API_PROXY_TARGET
+import { defineConfig, loadEnv } from 'vite'
+import react from '@vitejs/plugin-react'
 
-export default defineConfig({
-  plugins: [react()],
-  server: {
-    port: 5173,
-    ...(apiProxyTarget && {
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '')
+
+  return {
+    plugins: [react()],
+    server: {
+      port: 5173,
       proxy: {
         '/api': {
-          target: apiProxyTarget,
+          target: 'http://127.0.0.1:4173',
           changeOrigin: true,
-          secure: apiProxyTarget.startsWith('https://'),
         },
       },
-    }),
+    },
   }
 })

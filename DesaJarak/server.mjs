@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { createReadStream, readFileSync, existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { createHash, randomBytes, scryptSync } from "node:crypto";
@@ -58,25 +59,16 @@ const loadEnv = () => {
 };
 loadEnv();
 
-// Gemini AI client — support both API Key (AIzaSy...) and Bearer Token (AQ.Ab8...)
-let ai;
+// Konfigurasi Gemini AI
 const token = process.env.GEMINI_API_KEY;
 
 if (!token) {
-  console.warn("GEMINI_API_KEY not set — AI classification will fail.");
-  ai = new GoogleGenAI({ apiKey: "dummy" });
-} else if (token.startsWith("AIzaSy")) {
-  // Standard API Key from AI Studio
-  ai = new GoogleGenAI({ apiKey: token });
-} else {
-  // Bearer/OAuth token — inject via httpOptions
-  ai = new GoogleGenAI({
-    apiKey: token,
-    httpOptions: {
-      headers: { Authorization: `Bearer ${token}` },
-    },
-  });
+  console.warn("GEMINI_API_KEY tidak ditemukan.");
 }
+
+const ai = new GoogleGenAI({
+  apiKey: token || "dummy",
+});
 
 const classifyReportWithGemini = async (description) => {
   try {
@@ -85,11 +77,10 @@ const classifyReportWithGemini = async (description) => {
       contents: `
 Klasifikasikan laporan masyarakat berikut ke dalam tepat satu kategori:
 
-- Jalan
-- Drainase
+- Jalan & Fasilitas
 - Penerangan
-- Jembatan
-- Fasilitas Umum
+- Lingkungan
+- Lainnya
 
 Deskripsi laporan:
 "${description}"
@@ -100,13 +91,12 @@ Balas HANYA dengan nama kategorinya.
 
     const category = result.text.trim()
 
-    const allowedCategories = [
-      "Jalan",
-      "Drainase",
-      "Penerangan",
-      "Jembatan",
-      "Fasilitas Umum",
-    ]
+   const allowedCategories = [
+  "Jalan & Fasilitas",
+  "Penerangan",
+  "Lingkungan",
+  "Lainnya",
+]
 
     return allowedCategories.includes(category)
       ? category
@@ -117,6 +107,85 @@ Balas HANYA dengan nama kategorinya.
     return null
   }
 }
+
+const analyzeReportPriorityWithGemini = async ({
+  report,
+  votes = 0,
+  comments = [],
+}) => {
+  try {
+    const commentTexts = comments.map((comment) =>
+      String(comment.text || "")
+    );
+
+    const result = await ai.models.generateContent({
+      model: "gemini-3.5-flash-lite",
+      contents: `
+Kamu adalah AI analis laporan pelayanan masyarakat desa.
+
+Analisis laporan berikut untuk menentukan tingkat prioritas penanganan.
+
+JUDUL LAPORAN:
+${report.title || ""}
+
+DESKRIPSI:
+${report.description || ""}
+
+JUMLAH VOTE:
+${votes}
+
+JUMLAH KOMENTAR:
+${commentTexts.length}
+
+ISI KOMENTAR WARGA:
+${commentTexts.join("\n") || "Belum ada komentar."}
+
+Tentukan prioritas berdasarkan:
+1. Tingkat bahaya dan risiko keselamatan.
+2. Dampak masalah terhadap masyarakat.
+3. Tingkat urgensi penanganan.
+4. Jumlah dukungan dan komentar warga.
+
+Ketentuan:
+- Tinggi: masalah berbahaya, berdampak besar, atau sangat mendesak.
+- Sedang: masalah cukup penting dan membutuhkan perhatian.
+- Rendah: masalah ringan dan tidak mendesak.
+- Jangan menganggap laporan berbahaya hanya karena banyak vote.
+- Laporan berbahaya tetap dapat menjadi Tinggi meskipun vote dan komentar nol.
+
+Balas HANYA dalam format JSON:
+{
+  "urgency": "Rendah",
+  "reason": "Alasan penentuan prioritas"
+}
+`,
+    });
+
+    const text = result.text.trim()
+      .replace(/^```json\s*/i, "")
+      .replace(/```$/i, "")
+      .trim();
+
+    const analysis = JSON.parse(text);
+
+    const allowed = ["Rendah", "Sedang", "Tinggi"];
+
+    if (!allowed.includes(analysis.urgency)) {
+      return null;
+    }
+
+    return {
+      urgency: analysis.urgency,
+      reason: String(analysis.reason || ""),
+    };
+  } catch (error) {
+    console.error("Gemini analisis prioritas gagal:", error);
+    return null;
+  }
+};
+
+
+
 
 // Inisialisasi pool database dengan dukungan DATABASE_URL dan SSL otomatis
 const hasDatabaseUrl = Boolean(process.env.DATABASE_URL);
@@ -133,25 +202,11 @@ if (!hasDatabaseConfig) {
   );
 }
 
-const pool = process.env.DATABASE_URL
-  ? new Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl:
-        process.env.DATABASE_URL.includes("railway.internal")
-          ? false
-          : { rejectUnauthorized: false },
-    })
-  : new Pool({
-      host: process.env.PGHOST,
-      port: Number(process.env.PGPORT || 5432),
-      user: process.env.PGUSER,
-      password: process.env.PGPASSWORD,
-      database: process.env.PGDATABASE || process.env.POSTGRES_DB,
-      ssl:
-        process.env.PGSSL === "true" || process.env.PGHOST?.includes("railway")
-          ? { rejectUnauthorized: false }
-          : undefined,
-    });
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: false,
+});
+
 const categoryNames = [
   "Pembangunan Desa",
   "Penggunaan Website",
@@ -241,6 +296,80 @@ const detectReportUrgency = (report) =>
   /\b(darurat|berbahaya|bahaya|roboh|putus|kebakaran|banjir|longsor|ambruk|kecelakaan|parah|mengancam)\b/i.test(
     `${report.title} ${report.description}`,
   );
+  const normalizeDuplicateText = (value = "") =>
+  String(value)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const findPossibleDuplicate = (newReport, reports = []) => {
+  const newTitle = normalizeDuplicateText(newReport.title);
+  const newDescription = normalizeDuplicateText(newReport.description);
+  const newLocation = normalizeDuplicateText(newReport.location);
+
+  const words = (text) =>
+    new Set(text.split(" ").filter((word) => word.length >= 3));
+
+  const similarity = (textA, textB) => {
+    const wordsA = words(textA);
+    const wordsB = words(textB);
+
+    if (!wordsA.size || !wordsB.size) return 0;
+
+    const common = [...wordsA].filter((word) => wordsB.has(word)).length;
+    const total = new Set([...wordsA, ...wordsB]).size;
+
+    return common / total;
+  };
+  return reports
+    .filter((report) => String(report.id) !== String(newReport.id))
+    .map((report) => {
+      const sameLocation =
+        newLocation &&
+        newLocation === normalizeDuplicateText(report.location);
+
+      const titleSimilarity = similarity(
+        newTitle,
+        normalizeDuplicateText(report.title)
+      );
+
+      const descriptionSimilarity = similarity(
+        newDescription,
+        normalizeDuplicateText(report.description)
+      );
+
+      const score = titleSimilarity * 0.6 + descriptionSimilarity * 0.4;
+      return {
+        id: report.id,
+        title: report.title,
+        location: report.location,
+        score,
+        sameLocation,
+      };
+    })
+    .filter((report) => report.sameLocation && report.score >= 0.35)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3);
+};
+
+const calculateReportPriority = ({ report, votes = 0, comments = 0 }) => {
+  // Laporan yang mengandung kondisi berbahaya langsung diprioritaskan
+  if (detectReportUrgency(report)) {
+    return "Tinggi";
+  }
+
+  // Berdasarkan dukungan dan komentar warga
+  if (votes >= 10 || comments >= 5) {
+    return "Tinggi";
+  }
+
+  if (votes >= 3 || comments >= 2) {
+    return "Sedang";
+  }
+
+  return "Rendah";
+};
 
 const recordNotification = async ({ title, description, icon, color, action, eventKey = null }) => {
   const result = await pool.query(
@@ -334,7 +463,7 @@ const mutateNews = async (mutator) => {
   try {
     await client.query("BEGIN");
     const result = await client.query("SELECT data_value FROM app_data WHERE data_key = $1 FOR UPDATE", ["news"]);
-    const outcome = mutator(result.rows[0]?.data_value || []);
+    const outcome = await mutator(result.rows[0]?.data_value || []);
     if (!outcome) {
       await client.query("ROLLBACK");
       return null;
@@ -382,7 +511,7 @@ const mutateReports = async (mutator) => {
   try {
     await client.query("BEGIN");
     const result = await client.query("SELECT data_value FROM app_data WHERE data_key = $1 FOR UPDATE", ["reports"]);
-    const outcome = mutator(result.rows[0]?.data_value || []);
+    const outcome = await mutator(result.rows[0]?.data_value || []);
     if (!outcome) {
       await client.query("ROLLBACK");
       return null;
@@ -537,7 +666,7 @@ const initDatabase = async () => {
   ]) {
     const credentials = hashPassword(rawPassword);
     const email = `${username}@desa.id`;
-    
+
     // PERBAIKAN ERROR CRASH SEEDING: Cek keberadaan email dan username sebelum melakukan insert
     try {
       const existingUser = await pool.query("SELECT id FROM users WHERE username = $1 OR email = $2", [username, email]);
@@ -546,7 +675,7 @@ const initDatabase = async () => {
           `INSERT INTO users (username, fullname, password_hash, password_salt, nama, email, password, role, poin)
            VALUES ($1, $2, $3, $4, $2, $5, $6, $7, 0)`,
           [username, fullname, credentials.hash, credentials.salt, email, rawPassword, role],
-        ); 
+        );
       }
     } catch (err) {
       console.error(`Gagal menyuntikkan user ${username}:`, err.message);
@@ -576,7 +705,7 @@ const handleApi = async (request, response, pathname) => {
   // --- API POST TAMBAH KATEGORI ---
   if (request.method === "POST" && pathname === "/api/categories") {
     const body = await readJson(request);
-   
+
     if (!body.nama_kategori) return sendJson(response, 400, { message: "Nama kategori wajib diisi" });
     try {
       // Menyisipkan "-" ke kolom deskripsi untuk menghindari error NOT NULL
@@ -631,10 +760,42 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
   });
 }
 
-  if (request.method === "GET" && pathname === "/api/reports") {
-    const result = await pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["reports"]);
-    return sendJson(response, 200, result.rows[0]?.data_value || []);
-  }
+if (request.method === "GET" && pathname === "/api/reports") {
+  const reports = await mutateReports((items) => {
+    const updatedReports = items.map((report) => {
+      const votes = Math.max(
+        Number(report.votes || 0),
+        (report.voterIds || []).length
+      );
+
+      const comments = Math.max(
+        Number(report.comments || 0),
+        (report.commentsList || []).length
+      );
+
+      const urgency = calculateReportPriority({
+        report,
+        votes,
+        comments,
+      });
+
+      return {
+        ...report,
+        votes,
+        comments,
+        urgency,
+      };
+    });
+
+    return {
+      reports: updatedReports,
+      value: updatedReports,
+    };
+  });
+
+  return sendJson(response, 200, reports || []);
+}
+
   if (request.method === "POST" && pathname === "/api/reports") {
     return new Promise((resolve, reject) => {
       upload.array("images", 5)(request, response, async (err) => {
@@ -665,15 +826,11 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
         const aiCategory = await classifyReportWithGemini(body.deskripsi);
         const now = new Date();
         const categoryMap = {
-          Jalan: "Jalan & Fasilitas",
-          Jembatan: "Jalan & Fasilitas",
-          Drainase: "Jalan & Fasilitas",
-          Listrik: "Penerangan",
-          Air: "Lingkungan",
-          Lainya: "Lainnya",
-          Lainnya: "Lainnya",
-        };
-
+         "Jalan & Fasilitas": "Jalan & Fasilitas",
+         "Penerangan": "Penerangan",
+         "Lingkungan": "Lingkungan",
+         "Lainnya": "Lainnya",
+         };
         const report = await mutateReports((items) => {
           const id = `JR-${String(Date.now()).slice(-6)}`;
           const newReport = {
@@ -682,10 +839,10 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
             author: String(body.ownerName || "Warga Desa").trim(),
             ownerId: String(body.ownerId),
             ownerName: String(body.ownerName || "Warga Desa").trim(),
-            category: categoryMap[body.kategori] || body.kategori || "Lainnya",
-            aiCategory: aiCategory || "Belum diklasifikasi",
+            category: categoryMap[aiCategory] || aiCategory || "Lainnya",
+            aiCategory: categoryMap[aiCategory] || aiCategory || "Belum diklasifikasi",
             status: "Masuk",
-            urgency: detectReportUrgency({ title: body.judul, description: body.deskripsi }) ? "Tinggi" : "Sedang",
+            urgency: calculateReportPriority({report: { title: Strin(body.judul), description: String(body.deskripsi),}, votes: 0, comments: 0,}),
             votes: 0,
             comments: 0,
             image: imagePaths[0] || body.image || "",
@@ -702,6 +859,10 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
             commentsList: [],
             statusHistory: [{ status: "Masuk", time: now.toISOString(), reply: "" }],
           };
+          const possibleDuplicates = findPossibleDuplicate(newReport, items);
+          newReport.possibleDuplicates = possibleDuplicates;
+          newReport.hasPossibleDuplicate = possibleDuplicates.length > 0;
+
           return { reports: [newReport, ...items], value: newReport };
         });
 
@@ -719,7 +880,83 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
     });
   }
 
+  // --- API TOGGLE VOTE LAPORAN ---
+  if (
+    request.method === "POST" &&
+    /^\/api\/reports\/[^/]+\/vote$/.test(pathname)
+  ) {
+    const id = decodeURIComponent(
+      pathname.slice("/api/reports/".length, -"/vote".length)
+    );
+
+    const body = await readJson(request);
+    const ownerId = String(body.ownerId || "").trim();
+
+    if (!ownerId) {
+      return sendJson(response, 400, {
+        message: "Identitas pengguna wajib diisi.",
+      });
+    }
+
+    const updated = await mutateReports(async (items) => {
+      const current = items.find(
+        (item) => String(item.id) === id
+      );
+
+      if (!current) return null;
+
+      const voterIds = [...(current.voterIds || [])];
+      const alreadySupported = voterIds.includes(ownerId);
+
+      if (alreadySupported) {
+        voterIds.splice(voterIds.indexOf(ownerId), 1);
+      } else {
+        voterIds.push(ownerId);
+      }
+
+      const votes = voterIds.length;
+const commentsList = current.commentsList || [];
+
+const aiAnalysis = await analyzeReportPriorityWithGemini({
+  report: current,
+  votes,
+  comments: commentsList,
+});
+
+const urgency = aiAnalysis?.urgency ||
+  calculateReportPriority({
+    report: current,
+    votes,
+    comments: commentsList.length,
+  });
+
+const next = {
+  ...current,
+  voterIds,
+  votes,
+  urgency,
+  priorityReason: aiAnalysis?.reason || current.priorityReason || "",
+};
+      return {
+        reports: items.map((item) =>
+          String(item.id) === id ? next : item
+        ),
+        value: {
+          ...next,
+          supported: !alreadySupported,
+        },
+      };
+    });
+
+    return updated
+      ? sendJson(response, 200, updated)
+      : sendJson(response, 404, {
+          message: "Laporan tidak ditemukan.",
+        });
+  }
+
   if (request.method === "PUT" && /^\/api\/reports\/[^/]+$/.test(pathname)) {
+
     const id = decodeURIComponent(pathname.slice("/api/reports/".length));
     const body = await readJson(request);
     const allowedStatuses = ["Masuk", "Diproses", "Selesai", "Ditolak"];
@@ -762,7 +999,7 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
     const namaPelapor = body.name || "Warga Desa";
     const identifierUser = body.ownerId || body.name || "guest";
 
-    const updated = await mutateReports((items) => {
+    const updated = await mutateReports(async (items) => {
       const current = items.find((item) => String(item.id) === id);
       if (!current) return null;
 
@@ -782,8 +1019,29 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
       );
 
       const aiSuggestion = summarizeReportComments(commentsList);
-      const next = { ...current, commentsList, comments: commentsList.length, aiSuggestion };
+     // Analisis prioritas menggunakan Gemini AI
+const aiAnalysis = await analyzeReportPriorityWithGemini({
+  report: current,
+  votes: Number(current.votes || 0),
+  comments: commentsList,
+});
 
+// Gunakan perhitungan cadangan jika Gemini gagal
+const urgency = aiAnalysis?.urgency ||
+  calculateReportPriority({
+    report: current,
+    votes: Number(current.votes || 0),
+    comments: commentsList.length,
+  });
+
+const next = {
+  ...current,
+  commentsList,
+  comments: commentsList.length,
+  aiSuggestion,
+  urgency,
+  priorityReason: aiAnalysis?.reason || current.priorityReason || "",
+};
       return {
         reports: items.map((item) => (String(item.id) === id ? next : item)),
         value: next,
@@ -1115,7 +1373,7 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
     }
 
     const result = await pool.query(
-      `SELECT * FROM users 
+      `SELECT * FROM users
        WHERE username = $1 OR email = $1 OR nama = $1 OR username = $2`,
       [identifier, identifier.toLowerCase()],
     );
@@ -1166,7 +1424,7 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
 
   if (request.method === "PUT" && /^\/api\/users\/[^/]+$/.test(pathname)) {
     const id = decodeURIComponent(pathname.slice("/api/users/".length));
-    
+
     return new Promise((resolve, reject) => {
       upload.single("foto")(request, response, async (err) => {
         if (err) {
@@ -1178,7 +1436,7 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
         try {
           const { fullname, no_telepon, alamat, nik } = request.body;
           let fotoFilename = null;
-          
+
           if (request.file) {
             fotoFilename = request.file.filename;
           }

@@ -8,7 +8,7 @@ import { getReports, getCategories } from "../../utils/api.js";
 
 const statusFilters = ["Semua", "Masuk", "Diproses", "Selesai", "Ditolak"];
 
-export default function LacakLaporan() {
+export default function LacakLaporan({ session }) {
   const [laporanData, setLaporanData] = useState([]);
   const [dbCategories, setDbCategories] = useState([]);
   const [status, setStatus] = useState("Semua");
@@ -17,7 +17,7 @@ export default function LacakLaporan() {
 
   useEffect(() => {
     let mounted = true;
-    
+
     // Tarik Kategori dari API/Database
     getCategories()
       .then((items) => {
@@ -33,10 +33,10 @@ export default function LacakLaporan() {
         })
         .catch(() => {});
     };
-    
+
     refreshReports();
     const interval = setInterval(refreshReports, 3000);
-    
+
     return () => {
       mounted = false;
       clearInterval(interval);
@@ -117,7 +117,7 @@ export default function LacakLaporan() {
 
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {filtered.map((r, i) => (
-            <ReportCard key={i} report={r} />
+            <ReportCard key={i} report={r} session={session} />
           ))}
           {filtered.length === 0 && (
             <p className="md:col-span-full text-center text-xs text-gray-500 font-medium py-8 bg-white rounded-2xl border border-gray-100">Tidak ada laporan ditemukan.</p>

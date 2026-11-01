@@ -119,6 +119,7 @@ export default function AdminDashboard({ adminName, onLogout }) {
   const openReportDetail = (reportId) => setActiveReportId(reportId)
   const closeReportDetail = () => setActiveReportId(null)
   const activeReport = reports.find((r) => r.id === activeReportId) || null
+  console.log("DATA PRIORITAS AI:", activeReport?.priorityReason);
 
   const openNotifications = () => {
     setNotifOpen(true)
@@ -349,8 +350,12 @@ export default function AdminDashboard({ adminName, onLogout }) {
 
       <ProfilEditModal visible={profilEditOpen} profil={profil} onClose={() => setProfilEditOpen(false)} onSave={saveProfil} />
 
-      <ReportDetailModal report={activeReport} onClose={closeReportDetail} onSave={saveReportDetail} />
-
+      <ReportDetailModal
+       report={activeReport}
+      onClose={closeReportDetail}
+      onSave={saveReportDetail}
+       isAdmin={true}
+      />
       <EdukasiModal
         visible={edukasiModalOpen}
         editingItem={editingEdukasiItem}
