@@ -1,12 +1,13 @@
 import 'dotenv/config';
 import { createReadStream, readFileSync, existsSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, mkdir } from "node:fs/promises";
 import { createHash, randomBytes, scryptSync } from "node:crypto";
-import { extname, join, normalize } from "node:path";
+import { basename, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
 import pg from "pg";
 import { GoogleGenAI } from "@google/genai";
+import { OAuth2Client } from "google-auth-library";
 import multer from "multer";
 
 import {
@@ -19,24 +20,91 @@ import { beritaData } from "./src/user/data/berita.js";
 import { edukasiList } from "./src/user/data/edukasi.js";
 import { laporanData } from "./src/user/data/laporan.js";
 import { profilDesa } from "./src/user/data/profilDesa.js";
+import {
+  classifyReportWithGemini,
+  fallbackCategories,
+  findDuplicateCandidates,
+  verifyDuplicatesWithGemini,
+  analyzeCommentsWithGemini,
+  analyzeCommentsLocally,
+  summarizePrioritiesWithGemini,
+  computePriorityScore,
+} from "./server/ai.mjs";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const port = Number(process.env.PORT || 4173);
 const { Pool } = pg;
 
-// Konfigurasi Multer: memory storage (file disimpan di database sebagai base64)
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB per file
-  fileFilter: (req, file, cb) => {
-    const ext = extname(file.originalname).toLowerCase();
-    if ([".jpg", ".jpeg", ".png", ".gif"].includes(ext)) {
-      cb(null, true);
-    } else {
-      cb(new Error("Hanya file gambar (.jpg, .png, .gif) yang diperbolehkan."), false);
-    }
+// Konfigurasi Multer untuk Upload File
+const uploadDir = join(root, "uploads");
+// Pastikan folder uploads tersedia
+try {
+  await mkdir(uploadDir, { recursive: true });
+} catch (error) {
+  console.error("Gagal menyiapkan folder upload:", error);
+}
+
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, uniqueSuffix + extname(file.originalname));
   },
 });
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_request, file, callback) => {
+    if (["image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp"].includes(file.mimetype)) callback(null, true);
+    else callback(new Error("File harus berupa gambar."));
+  },
+});
+
+const uploadErrorMessage = (error) => {
+  if (error?.code === "LIMIT_FILE_SIZE") return "Ukuran foto maksimal 5 MB.";
+  return error?.message || "Gagal mengunggah foto.";
+};
+
+const logUploadError = (label, error) => {
+  if (error?.code === "LIMIT_FILE_SIZE" || error?.message === "File harus berupa gambar.") {
+    console.warn(`${label} ditolak: ${error.message}`);
+    return;
+  }
+  console.error(`${label} gagal:`, error);
+};
+
+const initialReportVotes = new Map(
+  initialReports.map((report) => [String(report.id), Number(report.votes) || 0]),
+);
+
+const toFiniteNumber = (value) => {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const resolveVoteBaseline = (report) => {
+  const stored = toFiniteNumber(report.voteBaseline);
+  if (stored !== null) return Math.max(0, stored);
+  const seedVotes = initialReportVotes.get(String(report.id));
+  if (seedVotes !== undefined) return seedVotes;
+  if (report.votesManaged) return 0;
+  return Math.max(0, toFiniteNumber(report.votes) ?? 0);
+};
+
+// Daftar kategori untuk klasifikasi AI, source of truth: tabel kategori_infrastruktur.
+// Fallback konsisten dengan default di GET /api/categories (lihat server/ai.mjs).
+const loadAllowedCategories = async () => {
+  try {
+    const result = await pool.query("SELECT nama_kategori FROM kategori_infrastruktur ORDER BY id ASC");
+    const list = result.rows.map((row) => row.nama_kategori).filter(Boolean);
+    return list.length ? list : fallbackCategories;
+  } catch {
+    return fallbackCategories;
+  }
+};
 
 const loadEnv = () => {
   const envPaths = [join(process.cwd(), ".env"), join(root, ".env")];
@@ -58,55 +126,48 @@ const loadEnv = () => {
   }
 };
 loadEnv();
+const googleAuthClient = new OAuth2Client();
 
 // Konfigurasi Gemini AI
 const token = process.env.GEMINI_API_KEY;
 
+let ai = null;
+
 if (!token) {
-  console.warn("GEMINI_API_KEY tidak ditemukan.");
+  console.warn("GEMINI_API_KEY not set - AI classification will fail.");
+} else if (token.startsWith("AIzaSy")) {
+  // Standard API Key from AI Studio
+  ai = new GoogleGenAI({ apiKey: token });
+} else {
+  // Bearer/OAuth token
+  ai = new GoogleGenAI({
+    apiKey: token,
+    httpOptions: {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    },
+  });
 }
 
-const ai = new GoogleGenAI({
-  apiKey: token || "dummy",
-});
+const normalizeSslMode = (value) => String(value || "").trim().toLowerCase();
+const isLocalDatabaseHost = (host) =>
+  ["localhost", "127.0.0.1", "::1"].includes(String(host || "").toLowerCase());
 
-const classifyReportWithGemini = async (description) => {
-  try {
-    const result = await ai.models.generateContent({
-      model: 'gemini-3.5-flash-lite',
-      contents: `
-Klasifikasikan laporan masyarakat berikut ke dalam tepat satu kategori:
-
-- Jalan & Fasilitas
-- Penerangan
-- Lingkungan
-- Lainnya
-
-Deskripsi laporan:
-"${description}"
-
-Balas HANYA dengan nama kategorinya.
-`,
-    })
-
-    const category = result.text.trim()
-
-   const allowedCategories = [
-  "Jalan & Fasilitas",
-  "Penerangan",
-  "Lingkungan",
-  "Lainnya",
-]
-
-    return allowedCategories.includes(category)
-      ? category
-      : null
-
-  } catch (error) {
-    console.error("Gemini classification gagal:", error)
-    return null
+const resolveDatabaseSsl = (host, explicitMode, defaultToSsl = false) => {
+  const mode = normalizeSslMode(explicitMode);
+  if (["disable", "false", "off", "0", "no"].includes(mode)) return false;
+  if (["require", "true", "on", "1", "yes", "verify-ca", "verify-full"].includes(mode)) {
+    return { rejectUnauthorized: false };
   }
-}
+
+  const normalizedHost = String(host || "").toLowerCase();
+  if (isLocalDatabaseHost(normalizedHost) || normalizedHost.endsWith(".railway.internal")) {
+    return false;
+  }
+  if (normalizedHost.includes("railway")) return { rejectUnauthorized: false };
+  return defaultToSsl ? { rejectUnauthorized: false } : undefined;
+};
 
 const analyzeReportPriorityWithGemini = async ({
   report,
@@ -184,29 +245,143 @@ Balas HANYA dalam format JSON:
   }
 };
 
+const buildDatabaseCandidates = () => {
+  const candidates = [];
 
+  for (const [label, connectionString] of [
+    ["DATABASE_URL", process.env.DATABASE_URL?.trim()],
+    ["DATABASE_PUBLIC_URL", process.env.DATABASE_PUBLIC_URL?.trim()],
+  ]) {
+    if (!connectionString || candidates.some((candidate) => candidate.connectionString === connectionString)) {
+      continue;
+    }
 
+    if (connectionString.includes("${{")) {
+      candidates.push({
+        label: `${label} (variabel reference belum ter-resolve)`,
+        connectionString,
+        configError: "Nilai masih mengandung ${{...}}. Gunakan format ${{NamaService.VARIABEL}}.",
+      });
+      continue;
+    }
 
-// Inisialisasi pool database dengan dukungan DATABASE_URL dan SSL otomatis
-const hasDatabaseUrl = Boolean(process.env.DATABASE_URL);
-const hasDatabaseConfig =
-  hasDatabaseUrl ||
-  (process.env.PGHOST &&
-    process.env.PGUSER &&
-    process.env.PGPASSWORD &&
-    (process.env.PGDATABASE || process.env.POSTGRES_DB));
+    let host = "";
+    let sslmode = "";
+    try {
+      const parsed = new URL(connectionString);
+      host = parsed.hostname;
+      sslmode = parsed.searchParams.get("sslmode") || "";
+    } catch {
+      candidates.push({
+        label,
+        connectionString,
+        configError: "Format URL tidak valid.",
+      });
+      continue;
+    }
 
-if (!hasDatabaseConfig) {
-  throw new Error(
-    "Konfigurasi PostgreSQL belum lengkap. Atur DATABASE_URL atau PGHOST, PGUSER, PGPASSWORD, dan PGDATABASE/POSTGRES_DB pada environment service aplikasi.",
+    candidates.push({
+      label: `${label} (${host})`,
+      connectionString,
+      config: {
+        connectionString,
+        ssl: resolveDatabaseSsl(host, sslmode, true),
+      },
+    });
+  }
+
+  const pgHost = process.env.PGHOST?.trim();
+  const pgUser = process.env.PGUSER?.trim();
+  const pgPassword = process.env.PGPASSWORD;
+  const pgDatabase = (process.env.PGDATABASE || process.env.POSTGRES_DB)?.trim();
+
+  if (pgHost && pgUser && pgPassword !== undefined && pgDatabase) {
+    const pgPort = Number(process.env.PGPORT || 5432);
+    candidates.push({
+      label: `PGHOST (${pgHost}:${pgPort})`,
+      config: {
+        host: pgHost,
+        port: pgPort,
+        user: pgUser,
+        password: pgPassword,
+        database: pgDatabase,
+        ssl: resolveDatabaseSsl(pgHost, process.env.PGSSL),
+      },
+    });
+  }
+
+  return candidates;
+};
+
+const readPositiveNumber = (value, fallback) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const databaseConnectAttempts = Math.floor(readPositiveNumber(process.env.DB_CONNECT_ATTEMPTS, 3));
+const databaseRetryDelayMs = readPositiveNumber(process.env.DB_CONNECT_RETRY_DELAY_MS, 1500);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const createPool = (config) => {
+  const databasePool = new Pool({
+    ...config,
+    connectionTimeoutMillis: 8000,
+  });
+  databasePool.on("error", (error) => {
+    console.error("PostgreSQL pool error:", error.message);
+  });
+  return databasePool;
+};
+
+let pool;
+
+const connectDatabase = async () => {
+  const candidates = buildDatabaseCandidates();
+  if (!candidates.length) {
+    const error = new Error(
+      "Konfigurasi PostgreSQL belum lengkap. Atur DATABASE_URL (disarankan: ${{Postgres.DATABASE_URL}}) atau PGHOST, PGUSER, PGPASSWORD, dan PGDATABASE/POSTGRES_DB pada service aplikasi Railway.",
+    );
+    error.code = "DB_CONFIG_MISSING";
+    throw error;
+  }
+
+  const failures = [];
+  for (const candidate of candidates) {
+    if (candidate.configError) {
+      failures.push(`${candidate.label}: ${candidate.configError}`);
+      continue;
+    }
+
+    for (let attempt = 1; attempt <= databaseConnectAttempts; attempt += 1) {
+      const candidatePool = createPool(candidate.config);
+      try {
+        const client = await candidatePool.connect();
+        try {
+          await client.query("SELECT 1");
+        } finally {
+          client.release();
+        }
+        console.log(`Database terhubung menggunakan ${candidate.label}.`);
+        return candidatePool;
+      } catch (error) {
+        await candidatePool.end().catch(() => {});
+        failures.push(`${candidate.label} [${attempt}/${databaseConnectAttempts}]: ${error.code || error.message}`);
+        console.warn(`Koneksi database gagal via ${candidate.label} (${error.code || error.message}).`);
+        if (attempt < databaseConnectAttempts) {
+          console.warn(`Mencoba lagi dalam ${databaseRetryDelayMs * attempt} ms...`);
+          await sleep(databaseRetryDelayMs * attempt);
+        }
+      }
+    }
+  }
+
+  const error = new Error(
+    `Gagal terhubung ke database setelah mencoba ${candidates.length} konfigurasi koneksi.`,
   );
-}
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: false,
-});
-
+  error.code = "DB_CONNECT_FAILED";
+  error.failures = failures;
+  throw error;
+};
 const categoryNames = [
   "Pembangunan Desa",
   "Penggunaan Website",
@@ -379,6 +554,39 @@ const recordNotification = async ({ title, description, icon, color, action, eve
   return result.rows[0];
 };
 
+const escapeHtml = (value) => String(value ?? "").replace(/[&<>\"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[char]);
+
+const sendTransactionalEmail = async ({ to, subject, text, html }) => {
+  const apiKey = process.env.RESEND_API_KEY;
+  const from = process.env.RESEND_FROM_EMAIL;
+  if (!apiKey || !from) return false;
+  try {
+    const result = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ from, to: [to], subject, text, html }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!result.ok) console.error("Layanan email menolak permintaan dengan status", result.status);
+    return result.ok;
+  } catch (error) {
+    console.error("Pengiriman email gagal:", error.message);
+    return false;
+  }
+};
+
+const sendEmailVerification = async ({ email, fullname, token }) => {
+  const baseUrl = (process.env.APP_BASE_URL || `http://localhost:${port}`).replace(/\/$/, "");
+  const link = `${baseUrl}/api/email/verify?token=${encodeURIComponent(token)}`;
+  const name = escapeHtml(fullname || "Warga Desa");
+  return sendTransactionalEmail({
+    to: email,
+    subject: "Konfirmasi notifikasi email E-Aspirasi Desa Jarak",
+    text: `Halo ${fullname || "Warga Desa"}, buka tautan berikut untuk mengaktifkan notifikasi status aspirasi: ${link}\nTautan berlaku selama 30 menit.`,
+    html: `<p>Halo ${name},</p><p>Konfirmasi alamat email Anda untuk mengaktifkan notifikasi status aspirasi E-Aspirasi Desa Jarak.</p><p><a href="${link}">Konfirmasi email</a></p><p>Tautan berlaku selama 30 menit. Jika Anda tidak meminta ini, abaikan email ini.</p>`,
+  });
+};
+
 const formatNotification = (row) => ({
   id: row.id,
   title: row.title,
@@ -445,7 +653,17 @@ const sendJson = (response, status, payload) => {
 const readJson = async (request) => {
   let body = "";
   for await (const chunk of request) body += chunk;
-  return body ? JSON.parse(body) : {};
+  if (!body) return {};
+  try {
+    return JSON.parse(body);
+  } catch (e) {
+    const contentType = request.headers["content-type"] || "";
+    if (contentType.includes("multipart/form-data")) {
+      return {};
+    }
+    console.error("JSON parse error:", e.message);
+    throw new Error("Invalid JSON payload");
+  }
 };
 
 const hashPassword = (password, salt = randomBytes(16).toString("hex")) => ({
@@ -457,6 +675,86 @@ const passwordMatches = (password, salt, expected) =>
   createHash("sha256")
     .update(hashPassword(password, salt).hash)
     .digest("hex") === createHash("sha256").update(expected).digest("hex");
+
+const safeUser = (user) => ({
+  userId: user.username,
+  username: user.username,
+  name: user.fullname || user.nama || user.username,
+  email: user.email || "",
+  role: user.role === "admin" ? "admin" : "user",
+});
+
+const createSession = async (user) => {
+  const token = randomBytes(32).toString("base64url");
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+  await pool.query(
+    "INSERT INTO user_sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)",
+    [createHash("sha256").update(token).digest("hex"), user.id, expiresAt],
+  );
+  return { ...safeUser(user), token, expiresAt: expiresAt.toISOString() };
+};
+
+const getAuthenticatedUser = async (request) => {
+  const authorization = request.headers.authorization || "";
+  const token = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+  if (!token) return null;
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  const result = await pool.query(
+    `SELECT u.id, u.username, u.fullname, u.nama, u.email, u.role
+     FROM user_sessions s JOIN users u ON u.id = s.user_id
+     WHERE s.token_hash = $1 AND s.expires_at > NOW()`,
+    [tokenHash],
+  );
+  return result.rows[0] || null;
+};
+
+const isAdmin = (user) => user?.role === "admin" || user?.username === "admin";
+
+const uploadMimeType = (filename) => ({
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".jfif": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+}[extname(filename).toLowerCase()] || "application/octet-stream");
+
+const verifyGoogleCredential = async (credential) => {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  if (!clientId) {
+    const error = new Error("Login Google belum dikonfigurasi. Atur GOOGLE_CLIENT_ID pada environment backend.");
+    error.status = 503;
+    throw error;
+  }
+  if (!credential || typeof credential !== "string" || credential.length > 10000) {
+    const error = new Error("Kredensial Google tidak valid.");
+    error.status = 400;
+    throw error;
+  }
+
+  let ticket;
+  try {
+    ticket = await googleAuthClient.verifyIdToken({ idToken: credential, audience: clientId });
+  } catch (verificationError) {
+    const networkErrorCodes = new Set(["ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED"]);
+    const verificationCode = verificationError.code || verificationError.cause?.code;
+    const certificatesUnavailable = verificationError.message?.startsWith("Failed to retrieve verification certificates") ||
+      networkErrorCodes.has(verificationCode) || verificationError.response?.status >= 500;
+    const error = new Error(certificatesUnavailable
+      ? "Server tidak dapat menghubungi layanan verifikasi Google. Coba lagi beberapa saat."
+      : "Verifikasi akun Google gagal. Pastikan Client ID sesuai lalu coba lagi.");
+    error.status = certificatesUnavailable ? 503 : 401;
+    throw error;
+  }
+
+  const claims = ticket.getPayload();
+  if (!claims?.sub || !claims.email || claims.email_verified !== true) {
+    const error = new Error("Akun Google tidak dapat diverifikasi untuk aplikasi ini.");
+    error.status = 401;
+    throw error;
+  }
+  return claims;
+};
 
 const mutateNews = async (mutator) => {
   const client = await pool.connect();
@@ -530,6 +828,24 @@ const mutateReports = async (mutator) => {
   }
 };
 
+const awardPoints = async (userId, activityType, referenceId, description, points) => {
+  const result = await pool.query(
+    `WITH new_activity AS (
+       INSERT INTO reward_activities (user_id, activity_type, reference_id, description, points)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (user_id, activity_type, reference_id) DO NOTHING
+       RETURNING user_id, points
+     )
+     UPDATE users
+     SET poin = COALESCE(users.poin, 0) + new_activity.points
+     FROM new_activity
+     WHERE users.id = new_activity.user_id
+     RETURNING users.poin`,
+    [userId, activityType, String(referenceId), description, points],
+  );
+  return result.rows[0]?.poin ?? null;
+};
+
 const initDatabase = async () => {
   try {
     await pool.query(`ALTER TABLE komentar ALTER COLUMN aspirasi_id TYPE TEXT;`);
@@ -549,6 +865,28 @@ const initDatabase = async () => {
       password_hash TEXT,
       password_salt TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      token_hash TEXT PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS report_votes (
+      report_id TEXT NOT NULL,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (report_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS reward_activities (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      activity_type TEXT NOT NULL,
+      reference_id TEXT NOT NULL,
+      description TEXT NOT NULL,
+      points INT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_id, activity_type, reference_id)
     );
     CREATE TABLE IF NOT EXISTS notifications (
       id BIGSERIAL PRIMARY KEY,
@@ -586,10 +924,32 @@ const initDatabase = async () => {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS alamat TEXT;`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS foto TEXT;`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS nik TEXT;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS google_sub TEXT;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_notifications_enabled BOOLEAN NOT NULL DEFAULT FALSE;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_token_hash TEXT;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_expires_at TIMESTAMPTZ;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_sent_at TIMESTAMPTZ;`);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub_unique ON users (google_sub) WHERE google_sub IS NOT NULL;`);
 
     await pool.query(`ALTER TABLE komentar ALTER COLUMN aspirasi_id TYPE TEXT;`);
     await pool.query(`ALTER TABLE komentar ALTER COLUMN user_id TYPE TEXT;`);
   } catch (err) {}
+
+  try {
+    await pool.query("CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique_lower ON users (LOWER(email)) WHERE email IS NOT NULL");
+  } catch (error) {
+    console.warn("Index email unik tidak dibuat; periksa email pengguna duplikat.", error.message);
+  }
+
+  const legacyPasswords = await pool.query("SELECT id, password FROM users WHERE password IS NOT NULL AND password <> ''");
+  for (const user of legacyPasswords.rows) {
+    const credentials = hashPassword(user.password);
+    await pool.query(
+      "UPDATE users SET password_hash = $1, password_salt = $2, password = NULL WHERE id = $3",
+      [credentials.hash, credentials.salt, user.id],
+    );
+  }
 
   for (const [key, value] of Object.entries(seedData)) {
     await pool.query(
@@ -683,7 +1043,134 @@ const initDatabase = async () => {
   }
 };
 
-const handleApi = async (request, response, pathname) => {
+const handleApi = async (request, response, url) => {
+  const { pathname, searchParams } = url;
+
+  if (request.method === "GET" && pathname === "/api/health") {
+    if (!pool) {
+      return sendJson(response, 503, { status: "error", database: "not-connected" });
+    }
+    try {
+      await pool.query("SELECT 1");
+      return sendJson(response, 200, { status: "ok", database: "connected" });
+    } catch (error) {
+      return sendJson(response, 503, { status: "error", database: "disconnected" });
+    }
+  }
+
+  const principal = await getAuthenticatedUser(request);
+
+  if (request.method === "GET" && pathname === "/api/auth/config") {
+    return sendJson(response, 200, { googleClientId: process.env.GOOGLE_CLIENT_ID || "" });
+  }
+
+  if (request.method === "GET" && pathname === "/api/auth/session") {
+    if (!principal) return sendJson(response, 401, { message: "Sesi tidak berlaku." });
+    return sendJson(response, 200, safeUser(principal));
+  }
+
+  if (request.method === "GET" && pathname === "/api/user/email-preferences") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk mengatur notifikasi email." });
+    const result = await pool.query("SELECT email, email_verified, email_notifications_enabled FROM users WHERE id = $1", [principal.id]);
+    const user = result.rows[0];
+    return sendJson(response, 200, {
+      email: user?.email || "",
+      emailVerified: Boolean(user?.email_verified),
+      enabled: Boolean(user?.email_notifications_enabled),
+      configured: Boolean(process.env.RESEND_API_KEY && process.env.RESEND_FROM_EMAIL),
+    });
+  }
+
+  if (request.method === "PUT" && pathname === "/api/user/email-preferences") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk mengatur notifikasi email." });
+    const body = await readJson(request);
+    const enabled = Boolean(body.enabled);
+    const result = await pool.query("SELECT email, fullname, email_verified, email_notifications_enabled, email_verification_sent_at FROM users WHERE id = $1", [principal.id]);
+    const user = result.rows[0];
+    if (!user?.email) return sendJson(response, 400, { message: "Tambahkan alamat email pada akun Anda terlebih dahulu." });
+    if (!enabled) {
+      await pool.query("UPDATE users SET email_notifications_enabled = FALSE, email_verification_token_hash = NULL, email_verification_expires_at = NULL, email_verification_sent_at = NULL WHERE id = $1", [principal.id]);
+      return sendJson(response, 200, { enabled: false, emailVerified: Boolean(user.email_verified), email: user.email });
+    }
+    if (user.email_verified) {
+      await pool.query("UPDATE users SET email_notifications_enabled = TRUE WHERE id = $1", [principal.id]);
+      return sendJson(response, 200, { enabled: true, emailVerified: true, email: user.email });
+    }
+    if (!process.env.RESEND_API_KEY || !process.env.RESEND_FROM_EMAIL) {
+      return sendJson(response, 503, { message: "Pengiriman email belum dikonfigurasi oleh pengelola website." });
+    }
+    if (user.email_verification_sent_at && Date.now() - new Date(user.email_verification_sent_at).getTime() < 60_000) {
+      return sendJson(response, 429, { message: "Email konfirmasi baru saja dikirim. Tunggu satu menit sebelum meminta lagi." });
+    }
+    const token = randomBytes(32).toString("hex");
+    const tokenHash = createHash("sha256").update(token).digest("hex");
+    await pool.query("UPDATE users SET email_verification_token_hash = $1, email_verification_expires_at = NOW() + INTERVAL '30 minutes', email_verification_sent_at = NOW() WHERE id = $2", [tokenHash, principal.id]);
+    const sent = await sendEmailVerification({ email: user.email, fullname: user.fullname || principal.nama, token });
+    if (!sent) {
+      await pool.query("UPDATE users SET email_verification_token_hash = NULL, email_verification_expires_at = NULL, email_verification_sent_at = NULL WHERE id = $1", [principal.id]);
+      return sendJson(response, 502, { message: "Email konfirmasi gagal dikirim. Periksa konfigurasi layanan email." });
+    }
+    return sendJson(response, 200, { enabled: false, emailVerified: false, verificationSent: true, email: user.email });
+  }
+
+  if (request.method === "GET" && pathname === "/api/email/verify") {
+    const token = searchParams.get("token") || "";
+    const tokenHash = createHash("sha256").update(token).digest("hex");
+    const verified = await pool.query("UPDATE users SET email_verified = TRUE, email_notifications_enabled = TRUE, email_verification_token_hash = NULL, email_verification_expires_at = NULL, email_verification_sent_at = NULL WHERE email_verification_token_hash = $1 AND email_verification_expires_at > NOW() RETURNING id", [tokenHash]);
+    const success = verified.rowCount > 0;
+    response.writeHead(success ? 200 : 400, { "Content-Type": "text/html; charset=utf-8" });
+    response.end(success
+      ? "<!doctype html><html lang='id'><meta charset='utf-8'><title>Email dikonfirmasi</title><body style='font:16px sans-serif;max-width:560px;margin:15vh auto;padding:24px'><h1>Email berhasil dikonfirmasi</h1><p>Notifikasi status aspirasi sekarang aktif. Anda dapat kembali ke dashboard E-Aspirasi Desa Jarak.</p></body></html>"
+      : "<!doctype html><html lang='id'><meta charset='utf-8'><title>Tautan tidak berlaku</title><body style='font:16px sans-serif;max-width:560px;margin:15vh auto;padding:24px'><h1>Tautan konfirmasi tidak berlaku</h1><p>Silakan masuk kembali dan minta email konfirmasi baru dari halaman Pengaturan.</p></body></html>");
+    return;
+  }
+
+  if (request.method === "DELETE" && pathname === "/api/auth/session") {
+    const token = (request.headers.authorization || "").replace(/^Bearer\s+/i, "").trim();
+    if (token) {
+      await pool.query("DELETE FROM user_sessions WHERE token_hash = $1", [createHash("sha256").update(token).digest("hex")]);
+    }
+    return sendJson(response, 200, { success: true });
+  }
+
+  if (request.method === "POST" && pathname === "/api/auth/google") {
+    const body = await readJson(request);
+    try {
+      const claims = await verifyGoogleCredential(body.credential);
+      const existing = await pool.query(
+        "SELECT * FROM users WHERE google_sub = $1 OR LOWER(email) = LOWER($2) ORDER BY CASE WHEN google_sub = $1 THEN 0 ELSE 1 END LIMIT 1",
+        [claims.sub, claims.email],
+      );
+      let user = existing.rows[0];
+      const displayName = String(claims.name || claims.given_name || claims.email.split("@")[0]).trim();
+      if (user && isAdmin(user)) {
+        return sendJson(response, 403, { message: "Akun admin harus masuk menggunakan password admin." });
+      }
+
+      if (user) {
+        const linked = await pool.query(
+          "UPDATE users SET google_sub = COALESCE(google_sub, $1), email_verified = TRUE, foto = COALESCE(foto, $2), fullname = COALESCE(NULLIF(fullname, ''), $3), nama = COALESCE(NULLIF(nama, ''), $3) WHERE id = $4 RETURNING *",
+          [claims.sub, claims.picture || null, displayName, user.id],
+        );
+        user = linked.rows[0];
+      } else {
+        const username = `google-${claims.sub}`;
+        const created = await pool.query(
+          `INSERT INTO users (username, fullname, nama, email, google_sub, foto, role, poin, email_verified)
+           VALUES ($1, $2, $2, $3, $4, $5, 'warga', 0, TRUE) RETURNING *`,
+          [username, displayName, claims.email, claims.sub, claims.picture || null],
+        );
+        user = created.rows[0];
+      }
+
+      return sendJson(response, 200, { success: true, ...await createSession(user) });
+    } catch (error) {
+      if (error.status) return sendJson(response, error.status, { message: error.message });
+      if (error.code === "23505") return sendJson(response, 409, { message: "Akun Google sudah terhubung ke pengguna lain." });
+      throw error;
+    }
+  }
+
   // --- API GET DAFTAR KATEGORI INFRASTRUKTUR ---
   if (request.method === "GET" && pathname === "/api/categories") {
     try {
@@ -704,6 +1191,7 @@ const handleApi = async (request, response, pathname) => {
 
   // --- API POST TAMBAH KATEGORI ---
   if (request.method === "POST" && pathname === "/api/categories") {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const body = await readJson(request);
 
     if (!body.nama_kategori) return sendJson(response, 400, { message: "Nama kategori wajib diisi" });
@@ -723,6 +1211,7 @@ const handleApi = async (request, response, pathname) => {
 
   // --- API DELETE KATEGORI ---
   if (request.method === "DELETE" && pathname.startsWith("/api/categories/")) {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const id = pathname.split("/").pop();
     try {
       await pool.query("DELETE FROM kategori_infrastruktur WHERE id = $1", [id]);
@@ -734,6 +1223,7 @@ const handleApi = async (request, response, pathname) => {
   }
 
   if (request.method === "GET" && pathname === "/api/notifications") {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const result = await pool.query(
       "SELECT id, title, description, icon, color, action, created_at, read_at FROM notifications ORDER BY created_at DESC LIMIT 100",
     );
@@ -744,58 +1234,172 @@ const handleApi = async (request, response, pathname) => {
     });
   }
   if (request.method === "POST" && pathname === "/api/notifications/read") {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const readAt = new Date().toISOString();
     await pool.query("UPDATE notifications SET read_at = $1 WHERE read_at IS NULL", [readAt]);
     return sendJson(response, 200, { ok: true, readAt });
   }
-if (request.method === "GET" && pathname === "/api/ai/classify-test") {
-  const description = "Toilet umum di balai desa rusak dan tidak dapat digunakan.";
+  if (request.method === "GET" && pathname === "/api/ai/classify-test") {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
+    const title = String(searchParams.get("judul") || "");
+    const description =
+      String(searchParams.get("deskripsi") || "").trim() ||
+      "Toilet umum di balai desa rusak dan tidak dapat digunakan.";
+    const allowedCategories = await loadAllowedCategories();
+    const category = await classifyReportWithGemini(ai, {
+      title,
+      description,
+      allowedCategories,
+    });
+    return sendJson(response, 200, {
+      success: true,
+      description,
+      allowedCategories,
+      category: category || "Belum diklasifikasi",
+    });
+  }
 
-  const category = await classifyReportWithGemini(description);
+  if (request.method === "POST" && pathname === "/api/assistant") {
+    const body = await readJson(request);
+    const message = String(body.message || "").trim().slice(0, 1000);
+    if (!message) return sendJson(response, 400, { message: "Tulis pertanyaan terlebih dahulu." });
+    const reportResult = await pool.query("SELECT data_value FROM app_data WHERE data_key = 'reports'");
+    const availableReports = reportResult.rows[0]?.data_value || [];
+    const reportContext = availableReports.map(({ id, title, status, category }) => ({ id, title, status, category }));
+    const adminScope = isAdmin(principal);
+    const assistantProfile = {
+      namaDesa: profilDesa.namaDesa,
+      kecamatan: profilDesa.kecamatan,
+      kabupaten: profilDesa.kabupaten,
+      wilayahDusun: profilDesa.wilayahDusun,
+      jumlahRt: profilDesa.jumlahRt,
+      jumlahRw: profilDesa.jumlahRw,
+      totalPenduduk: profilDesa.totalPenduduk,
+    };
+    if (ai) {
+      try {
+        const result = await ai.models.generateContent({
+          model: "gemini-3.5-flash-lite",
+          contents: `Kamu asisten layanan warga Desa ${assistantProfile.namaDesa}. Jawab singkat, sopan, dalam Bahasa Indonesia. Jangan mengarang kebijakan/nomor kontak. Jika data tidak tersedia, katakan demikian.\nPengguna ini adalah ${adminScope ? "ADMIN desa: boleh merangkum data internal secara lengkap, boleh membantu menyusun draf tanggapan resmi dan draf berita." : "WARGA biasa: hanya jelaskan cara memakai layanan dan informasi umum."}\nProfil desa: ${JSON.stringify(assistantProfile)}\nData aspirasi yang boleh diketahui pengguna ini: ${JSON.stringify(reportContext)}\n\nPertanyaan: ${message}`,
+        });
+        if (result.text?.trim()) return sendJson(response, 200, { reply: result.text.trim(), mode: "ai" });
+      } catch (error) {
+        console.error("Asisten AI gagal menjawab:", error.message);
+      }
+    }
+    const normalized = message.toLowerCase();
+    const idMatch = message.match(/\bJR-[\w-]+\b/i);
+    const matchedReport = idMatch && availableReports.find((report) => String(report.id).toLowerCase() === idMatch[0].toLowerCase());
+    let reply;
+    if (matchedReport) reply = `Laporan ${matchedReport.id} (${matchedReport.title}) berstatus ${matchedReport.status}.`;
+    else if (normalized.includes("privasi") || normalized.includes("rahasia") || normalized.includes("pribadi")) reply = "Aspirasi dengan pilihan privat hanya dapat dilihat oleh akun Anda dan petugas admin. Pilih opsi Privat saat mengirim aspirasi.";
+    else if (normalized.includes("lapor") || normalized.includes("aspirasi")) reply = "Buka menu Aspirasi, isi judul, lokasi, dan deskripsi dengan jelas. Anda dapat memilih laporan privat atau publik sebelum mengirim.";
+    else if (normalized.includes("status") || normalized.includes("lacak")) reply = "Untuk melihat tindak lanjut, buka menu Lacak atau Riwayat. Masukkan kode laporan seperti JR-123456 agar saya dapat membantu mengecek statusnya.";
+    else if (normalized.includes("berapa hari") || normalized.includes("ditindaklanjuti")) reply = "Waktu tindak lanjut bergantung pada jenis masalah dan proses pemeriksaan desa. Pantau status terbaru melalui menu Riwayat atau Lacak Laporan.";
+    else reply = "Saya dapat membantu menjelaskan cara membuat aspirasi, privasi laporan, dan cara melacak status. Sertakan kode laporan jika ingin mengecek status tertentu.";
+    return sendJson(response, 200, { reply, mode: "guide" });
+  }
 
-  return sendJson(response, 200, {
-    success: true,
-    description,
-    category: category || "Belum diklasifikasi",
-  });
-}
+  if (request.method === "GET" && pathname === "/api/rewards") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk melihat poin reward." });
+    const [userResult, rankResult, leaderboardResult, activityResult, reportResult] = await Promise.all([
+      pool.query("SELECT COALESCE(poin, 0)::int AS points FROM users WHERE id = $1", [principal.id]),
+      pool.query("SELECT rank::int FROM (SELECT id, ROW_NUMBER() OVER (ORDER BY COALESCE(poin, 0) DESC, created_at ASC, id ASC) AS rank FROM users WHERE role <> 'admin') ranked WHERE id = $1", [principal.id]),
+      pool.query("SELECT id, COALESCE(poin, 0)::int AS points FROM users WHERE role <> 'admin' ORDER BY COALESCE(poin, 0) DESC, created_at ASC, id ASC LIMIT 10"),
+      pool.query("SELECT activity_type, reference_id, description, points, created_at FROM reward_activities WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20", [principal.id]),
+      pool.query("SELECT data_value FROM app_data WHERE data_key = 'reports'"),
+    ]);
+    const userReports = (reportResult.rows[0]?.data_value || []).filter((report) => String(report.ownerId) === principal.username).length;
+    const totalsResult = await pool.query("SELECT activity_type, COUNT(*)::int AS count FROM reward_activities WHERE user_id = $1 GROUP BY activity_type", [principal.id]);
+    const totals = Object.fromEntries(totalsResult.rows.map((row) => [row.activity_type, row.count]));
+    const citizens = await pool.query("SELECT COUNT(*)::int AS count FROM users WHERE role <> 'admin'");
+    return sendJson(response, 200, {
+      points: userResult.rows[0]?.points || 0,
+      rank: Number(rankResult.rows[0]?.rank || 1),
+      citizenCount: citizens.rows[0]?.count || 0,
+      counts: { reports: userReports, votes: totals.vote || 0, comments: (totals.report_comment || 0) + (totals.news_comment || 0) },
+      leaderboard: leaderboardResult.rows.map((row, index) => ({ name: `Warga #${index + 1}`, points: row.points })),
+      activities: activityResult.rows.map((row) => ({ type: row.activity_type, referenceId: row.reference_id, description: row.description, points: row.points, createdAt: row.created_at })),
+    });
+  }
 
 if (request.method === "GET" && pathname === "/api/reports") {
-  const reports = await mutateReports((items) => {
-    const updatedReports = items.map((report) => {
-      const votes = Math.max(
-        Number(report.votes || 0),
-        (report.voterIds || []).length
-      );
+  const scope = searchParams.get("scope") || (isAdmin(principal) ? "all" : "public");
 
-      const comments = Math.max(
-        Number(report.comments || 0),
-        (report.commentsList || []).length
-      );
+  if (!["public", "accessible", "mine", "all"].includes(scope)) {
+    return sendJson(response, 400, {
+      message: "Pilihan daftar laporan tidak valid.",
+    });
+  }
 
-      const urgency = calculateReportPriority({
-        report,
-        votes,
-        comments,
-      });
+  if (["mine", "all"].includes(scope) && !principal) {
+    return sendJson(response, 401, {
+      message: "Masuk ke akun warga untuk melihat riwayat pribadi.",
+    });
+  }
 
-      return {
-        ...report,
-        votes,
-        comments,
-        urgency,
-      };
+  if (scope === "all" && !isAdmin(principal)) {
+    return sendJson(response, 403, {
+      message: "Akses admin diperlukan.",
+    });
+  }
+
+  const result = await pool.query(
+    "SELECT data_value FROM app_data WHERE data_key = $1",
+    ["reports"]
+  );
+
+  const stored = result.rows[0]?.data_value || [];
+
+  const votesResult = await pool.query(
+    "SELECT report_id, COUNT(*)::int AS count FROM report_votes GROUP BY report_id"
+  );
+
+  const voteCounts = new Map(
+    votesResult.rows.map((row) => [
+      String(row.report_id),
+      row.count,
+    ])
+  );
+
+  const myVotes = principal
+    ? await pool.query(
+        "SELECT report_id FROM report_votes WHERE user_id = $1",
+        [principal.id]
+      )
+    : { rows: [] };
+
+  const myVoteIds = new Set(
+    myVotes.rows.map((row) => String(row.report_id))
+  );
+
+  const reports = stored.map((report) => {
+    const votes =
+      resolveVoteBaseline(report) +
+      (voteCounts.get(String(report.id)) || 0);
+
+    const comments = Math.max(
+      Number(report.comments || 0),
+      (report.commentsList || []).length
+    );
+
+    const urgency = calculateReportPriority({
+      report,
+      votes,
+      comments,
     });
 
     return {
-      reports: updatedReports,
-      value: updatedReports,
+      ...report,
+      votes,
+      comments,
+      urgency,
+      votedByMe: myVoteIds.has(String(report.id)),
     };
   });
 
-  return sendJson(response, 200, reports || []);
+  return sendJson(response, 200, reports);
 }
-
   if (request.method === "POST" && pathname === "/api/reports") {
     return new Promise((resolve, reject) => {
       upload.array("images", 5)(request, response, async (err) => {
@@ -823,14 +1427,20 @@ if (request.method === "GET" && pathname === "/api/reports") {
           });
         }
 
-        const aiCategory = await classifyReportWithGemini(body.deskripsi);
+       const aiCategory = await classifyReportWithGemini(ai, {
+  title: body.judul,
+  description: body.deskripsi,
+});
         const now = new Date();
         const categoryMap = {
-         "Jalan & Fasilitas": "Jalan & Fasilitas",
-         "Penerangan": "Penerangan",
-         "Lingkungan": "Lingkungan",
-         "Lainnya": "Lainnya",
-         };
+          Jalan: "Jalan & Fasilitas",
+          Jembatan: "Jalan & Fasilitas",
+          Drainase: "Jalan & Fasilitas",
+          Listrik: "Penerangan",
+          Air: "Lingkungan",
+          Lainya: "Lainnya",
+          Lainnya: "Lainnya",
+        };
         const report = await mutateReports((items) => {
           const id = `JR-${String(Date.now()).slice(-6)}`;
           const newReport = {
@@ -839,10 +1449,10 @@ if (request.method === "GET" && pathname === "/api/reports") {
             author: String(body.ownerName || "Warga Desa").trim(),
             ownerId: String(body.ownerId),
             ownerName: String(body.ownerName || "Warga Desa").trim(),
-            category: categoryMap[aiCategory] || aiCategory || "Lainnya",
-            aiCategory: categoryMap[aiCategory] || aiCategory || "Belum diklasifikasi",
+            category: categoryMap[body.kategori] || body.kategori || "Lainnya",
+            aiCategory: aiCategory || "Belum diklasifikasi",
             status: "Masuk",
-            urgency: calculateReportPriority({report: { title: Strin(body.judul), description: String(body.deskripsi),}, votes: 0, comments: 0,}),
+            urgency: detectReportUrgency({ title: body.judul, description: body.deskripsi }) ? "Tinggi" : "Sedang",
             votes: 0,
             comments: 0,
             image: imagePaths[0] || body.image || "",
@@ -859,104 +1469,44 @@ if (request.method === "GET" && pathname === "/api/reports") {
             commentsList: [],
             statusHistory: [{ status: "Masuk", time: now.toISOString(), reply: "" }],
           };
-          const possibleDuplicates = findPossibleDuplicate(newReport, items);
-          newReport.possibleDuplicates = possibleDuplicates;
-          newReport.hasPossibleDuplicate = possibleDuplicates.length > 0;
-
           return { reports: [newReport, ...items], value: newReport };
         });
-
-        await recordNotification({
-          title: report.urgency === "Tinggi" ? "Laporan baru dengan urgensi tinggi" : "Laporan baru masuk",
-          description: `${report.id}: ${report.title}`,
-          icon: report.urgency === "Tinggi" ? "fa-triangle-exclamation" : "fa-file-circle-plus",
-          color: report.urgency === "Tinggi" ? "bg-rose-50 text-rose-600" : "bg-emerald-50 text-emerald-600",
-          action: { type: "report", id: report.id },
-          eventKey: `report-created-${report.id}`,
-        });
-
-        resolve(sendJson(response, 201, report));
+    await recordNotification({
+      title: report.urgency === "Tinggi" ? "Laporan baru dengan urgensi tinggi" : "Laporan baru masuk",
+      description: `${report.id}: ${report.title}`,
+      icon: report.urgency === "Tinggi" ? "fa-triangle-exclamation" : "fa-file-circle-plus",
+      color: report.urgency === "Tinggi" ? "bg-rose-50 text-rose-600" : "bg-emerald-50 text-emerald-600",
+      action: { type: "report", id: report.id },
+      eventKey: `report-created-${report.id}`,
+    });
+    return sendJson(response, 201, report);
       });
     });
   }
 
-  // --- API TOGGLE VOTE LAPORAN ---
-  if (
-    request.method === "POST" &&
-    /^\/api\/reports\/[^/]+\/vote$/.test(pathname)
-  ) {
-    const id = decodeURIComponent(
-      pathname.slice("/api/reports/".length, -"/vote".length)
-    );
-
-    const body = await readJson(request);
-    const ownerId = String(body.ownerId || "").trim();
-
-    if (!ownerId) {
-      return sendJson(response, 400, {
-        message: "Identitas pengguna wajib diisi.",
+  if (request.method === "POST" && pathname === "/api/uploads") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk mengunggah foto." });
+    return new Promise((resolve) => {
+      upload.single("file")(request, response, (error) => {
+        if (error) {
+          logUploadError("Upload foto", error);
+          sendJson(response, 400, { message: uploadErrorMessage(error) });
+        } else if (!request.file) {
+          sendJson(response, 400, { message: "Pilih foto terlebih dahulu." });
+        } else {
+          sendJson(response, 201, { image: `/uploads/${request.file.filename}` });
+        }
+        resolve();
       });
-    }
-
-    const updated = await mutateReports(async (items) => {
-      const current = items.find(
-        (item) => String(item.id) === id
-      );
-
-      if (!current) return null;
-
-      const voterIds = [...(current.voterIds || [])];
-      const alreadySupported = voterIds.includes(ownerId);
-
-      if (alreadySupported) {
-        voterIds.splice(voterIds.indexOf(ownerId), 1);
-      } else {
-        voterIds.push(ownerId);
-      }
-
-      const votes = voterIds.length;
-const commentsList = current.commentsList || [];
-
-const aiAnalysis = await analyzeReportPriorityWithGemini({
-  report: current,
-  votes,
-  comments: commentsList,
-});
-
-const urgency = aiAnalysis?.urgency ||
-  calculateReportPriority({
-    report: current,
-    votes,
-    comments: commentsList.length,
-  });
-
-const next = {
-  ...current,
-  voterIds,
-  votes,
-  urgency,
-  priorityReason: aiAnalysis?.reason || current.priorityReason || "",
-};
-      return {
-        reports: items.map((item) =>
-          String(item.id) === id ? next : item
-        ),
-        value: {
-          ...next,
-          supported: !alreadySupported,
-        },
-      };
     });
-
-    return updated
-      ? sendJson(response, 200, updated)
-      : sendJson(response, 404, {
-          message: "Laporan tidak ditemukan.",
-        });
   }
 
   if (request.method === "PUT" && /^\/api\/reports\/[^/]+$/.test(pathname)) {
-
+      if (!isAdmin(principal)) {
+    return sendJson(response, 403, {
+      message: "Akses admin diperlukan.",
+    });
+  }
     const id = decodeURIComponent(pathname.slice("/api/reports/".length));
     const body = await readJson(request);
     const allowedStatuses = ["Masuk", "Diproses", "Selesai", "Ditolak"];
@@ -965,9 +1515,11 @@ const next = {
       return sendJson(response, 400, { message: "Status laporan tidak valid." });
     }
 
+    let previousReport = null;
     const updated = await mutateReports((items) => {
       const current = items.find((item) => String(item.id) === id);
       if (!current) return null;
+      previousReport = current;
 
       const time = new Date().toISOString();
       const officialReply = String(body.officialReply ?? current.officialReply ?? "").trim();
@@ -984,10 +1536,30 @@ const next = {
       };
     });
 
+    if (updated && previousReport && (updated.status !== previousReport.status || updated.officialReply !== previousReport.officialReply)) {
+      const recipient = await pool.query(
+        "SELECT email, fullname FROM users WHERE username = $1 AND email_verified = TRUE AND email_notifications_enabled = TRUE",
+        [updated.ownerId],
+      );
+      const user = recipient.rows[0];
+      if (user?.email) {
+        const title = escapeHtml(updated.title);
+        const status = escapeHtml(updated.status);
+        const reply = escapeHtml(updated.officialReply || "Belum ada tanggapan tambahan.");
+        await sendTransactionalEmail({
+          to: user.email,
+          subject: `Pembaruan aspirasi ${updated.id}: ${updated.status}`,
+          text: `Halo ${user.fullname || "Warga Desa"}, status aspirasi ${updated.id} (${updated.title}) sekarang ${updated.status}. Tanggapan admin: ${updated.officialReply || "Belum ada tanggapan tambahan."}`,
+          html: `<p>Halo ${escapeHtml(user.fullname || "Warga Desa")},</p><p>Ada pembaruan pada aspirasi <strong>${escapeHtml(updated.id)}</strong>: ${title}.</p><p>Status terbaru: <strong>${status}</strong></p><p>Tanggapan admin: ${reply}</p>`,
+        });
+      }
+    }
+
     return updated ? sendJson(response, 200, updated) : sendJson(response, 404, { message: "Laporan tidak ditemukan." });
   }
 
   if (request.method === "POST" && /^\/api\/reports\/[^/]+\/comments$/.test(pathname)) {
+    if (!principal) return sendJson(response, 401, { message: "Masuk ke akun untuk memberi komentar." });
     const id = decodeURIComponent(pathname.slice("/api/reports/".length, -"/comments".length));
     const body = await readJson(request);
     const text = String(body.text || "").trim();
@@ -996,8 +1568,8 @@ const next = {
       return sendJson(response, 400, { message: "Identitas dan isi komentar wajib diisi." });
     }
 
-    const namaPelapor = body.name || "Warga Desa";
-    const identifierUser = body.ownerId || body.name || "guest";
+    const namaPelapor = principal.fullname || principal.nama || "Warga Desa";
+    const identifierUser = principal.username;
 
     const updated = await mutateReports(async (items) => {
       const current = items.find((item) => String(item.id) === id);
@@ -1052,12 +1624,13 @@ const next = {
       try {
         await pool.query(
           "INSERT INTO komentar (aspirasi_id, user_id, isi_komentar) VALUES ($1, $2, $3)",
-          [String(id), String(identifierUser), text],
+          [String(id), String(principal.id), text],
         );
       } catch (err) {}
 
       if (updated.commentsList?.length) {
         const latestComment = updated.commentsList.at(-1);
+        if (!isAdmin(principal)) await awardPoints(principal.id, "report_comment", latestComment.id, `Komentar pada laporan ${updated.id}`, 50);
         await recordNotification({
           title: "Komentar baru pada laporan",
           description: `${latestComment.name} mengomentari ${updated.id}: ${updated.title}`,
@@ -1075,10 +1648,12 @@ const next = {
 
   if (request.method === "GET" && pathname === "/api/education") {
     const result = await pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["edukasi"]);
-    return sendJson(response, 200, result.rows[0]?.data_value || []);
+    const items = result.rows[0]?.data_value || [];
+    return sendJson(response, 200, isAdmin(principal) ? items : items.filter((item) => item.status === "Publish"));
   }
 
   if (request.method === "POST" && pathname === "/api/education") {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const body = await readJson(request);
     if (!body.title || !body.desc || !body.content) {
       return sendJson(response, 400, { message: "Judul, ringkasan, dan isi edukasi wajib diisi." });
@@ -1114,6 +1689,7 @@ const next = {
   }
 
   if (request.method === "PUT" && /^\/api\/education\/[^/]+$/.test(pathname)) {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const id = decodeURIComponent(pathname.slice("/api/education/".length));
     const updates = await readJson(request);
     const allowed = ["category", "title", "desc", "subtitle", "content", "status", "image", "iconName"];
@@ -1149,6 +1725,7 @@ const next = {
   }
 
   if (request.method === "DELETE" && /^\/api\/education\/[^/]+$/.test(pathname)) {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const id = decodeURIComponent(pathname.slice("/api/education/".length));
     const deleted = await mutateEducation((items) => {
       if (!items.some((item) => String(item.id) === id || item.slug === id)) return null;
@@ -1163,10 +1740,12 @@ const next = {
 
   if (request.method === "GET" && pathname === "/api/news") {
     const result = await pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["news"]);
-    return sendJson(response, 200, result.rows[0]?.data_value || []);
+    const items = result.rows[0]?.data_value || [];
+    return sendJson(response, 200, isAdmin(principal) ? items : items.filter((item) => ["Tayang", "Publish"].includes(item.status)));
   }
 
   if (request.method === "POST" && pathname === "/api/news") {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const body = await readJson(request);
     if (!body.title || !body.content) {
       return sendJson(response, 400, { message: "Judul dan isi berita wajib diisi." });
@@ -1203,6 +1782,7 @@ const next = {
   }
 
   if (request.method === "PUT" && /^\/api\/news\/[^/]+$/.test(pathname)) {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const id = decodeURIComponent(pathname.slice("/api/news/".length));
     const updates = await readJson(request);
     const allowed = ["title", "category", "date", "status", "image", "content"];
@@ -1227,6 +1807,7 @@ const next = {
   }
 
   if (request.method === "DELETE" && /^\/api\/news\/[^/]+$/.test(pathname)) {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const id = decodeURIComponent(pathname.slice("/api/news/".length));
     const deleted = await mutateNews((items) => {
       if (!items.some((item) => String(item.id) === id)) return null;
@@ -1240,6 +1821,7 @@ const next = {
   }
 
   if (request.method === "POST" && /^\/api\/news\/[^/]+\/comments$/.test(pathname)) {
+    if (!principal) return sendJson(response, 401, { message: "Masuk ke akun untuk memberi komentar." });
     const id = decodeURIComponent(pathname.slice("/api/news/".length, -"/comments".length));
     const body = await readJson(request);
     const text = String(body.text || "").trim();
@@ -1248,8 +1830,9 @@ const next = {
       return sendJson(response, 400, { message: "Komentar tidak boleh kosong." });
     }
 
-    const role = body.role === "admin" ? "admin" : "user";
-    const name = String(body.name || (role === "admin" ? "Admin Desa Jarak" : "Warga Desa")).trim();
+    const role = isAdmin(principal) ? "admin" : "user";
+    if (body.replyToId && role !== "admin") return sendJson(response, 403, { message: "Hanya admin yang dapat membalas komentar." });
+    const name = role === "admin" ? "Admin Desa Jarak" : String(principal.fullname || principal.nama || "Warga Desa").trim();
 
     const comment = {
       id: randomBytes(8).toString("hex"),
@@ -1288,11 +1871,12 @@ const next = {
       try {
         await pool.query(
           "INSERT INTO komentar (aspirasi_id, user_id, isi_komentar) VALUES ($1, $2, $3)",
-          [String(`Berita-${id}`), String(name), text],
+          [String(`Berita-${id}`), String(principal.id), text],
         );
       } catch (err) {}
 
       if (role === "user") {
+        await awardPoints(principal.id, "news_comment", comment.id, `Komentar pada berita ${updated.title}`, 50);
         await recordNotification({
           title: "Komentar baru pada berita desa",
           description: `${comment.name} mengomentari "${updated.title}".`,
@@ -1311,6 +1895,7 @@ const next = {
   }
 
   if (request.method === "GET" && pathname === "/api/data") {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const result = await pool.query("SELECT data_key, data_value FROM app_data ORDER BY data_key");
     return sendJson(
       response,
@@ -1320,6 +1905,7 @@ const next = {
   }
 
   if (request.method === "PUT" && pathname.startsWith("/api/data/")) {
+    if (!isAdmin(principal)) return sendJson(response, 403, { message: "Akses admin diperlukan." });
     const key = pathname.slice("/api/data/".length);
     if (!Object.hasOwn(seedData, key)) {
       return sendJson(response, 404, { message: "Dataset tidak ditemukan." });
@@ -1333,6 +1919,11 @@ const next = {
     return sendJson(response, 200, { ok: true, key, value });
   }
 
+  if (request.method === "GET" && pathname === "/api/profile") {
+    const result = await pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["profil"]);
+    return sendJson(response, 200, result.rows[0]?.data_value || initialProfilDesa);
+  }
+
   if (request.method === "POST" && (pathname === "/api/auth/login" || pathname === "/api/auth/register")) {
     const body = await readJson(request);
     const identifier = String(body.username || body.email || "").trim();
@@ -1344,26 +1935,23 @@ const next = {
 
     if (pathname.endsWith("register")) {
       const username = identifier.toLowerCase().replace(/\s+/g, "");
-      const fullname = String(body.fullname || body.nama || identifier).trim();
-      const email = identifier.includes("@") ? identifier : `${username}@desa.id`;
+      const fullname = String(body.fullname || body.nama || "").trim();
+      const email = String(body.email || (identifier.includes("@") ? identifier : `${username}@desa.id`)).trim().toLowerCase();
+      if (!fullname || username.length < 3) {
+        return sendJson(response, 400, { message: "Nama lengkap dan username minimal 3 karakter wajib diisi." });
+      }
+      if (username === "admin") return sendJson(response, 409, { message: "Username tersebut tidak dapat digunakan." });
       const credentials = hashPassword(password);
 
       try {
-      const insertRes = await pool.query(
-  `INSERT INTO users (username, fullname, password_hash, password_salt, nama, email, password, role, poin)
-   VALUES ($1, $2, $3, $4, $2, $5, $6, 'warga', 0)
-   RETURNING *`,
-  [username, fullname, credentials.hash, credentials.salt, email, password],
-);
-        const newUser = insertRes.rows[0];
-
-        return sendJson(response, 201, {
-          success: true,
-          role: "user",
-          name: fullname,
-          userId: username,
-          user: newUser,
-        });
+        const duplicate = await pool.query("SELECT id FROM users WHERE LOWER(email) = LOWER($1) OR LOWER(username) = LOWER($2)", [email, username]);
+        if (duplicate.rows.length) return sendJson(response, 409, { message: "Username atau email sudah terdaftar." });
+        const insertRes = await pool.query(
+          `INSERT INTO users (username, fullname, password_hash, password_salt, nama, email, role, poin)
+           VALUES ($1, $2, $3, $4, $2, $5, 'warga', 0) RETURNING *`,
+          [username, fullname, credentials.hash, credentials.salt, email],
+        );
+        return sendJson(response, 201, { success: true, ...await createSession(insertRes.rows[0]) });
       } catch (error) {
         if (error.code === "23505") {
           return sendJson(response, 409, { message: "Akun/Email sudah terdaftar." });
@@ -1372,6 +1960,7 @@ const next = {
       }
     }
 
+    const normalizedIdentifier = identifier.toLowerCase();
     const result = await pool.query(
       `SELECT * FROM users
        WHERE username = $1 OR email = $1 OR nama = $1 OR username = $2`,
@@ -1385,27 +1974,19 @@ const next = {
       if (user.password_salt && user.password_hash) {
         isAuthenticated = passwordMatches(password, user.password_salt, user.password_hash);
       }
-      if (!isAuthenticated && user.password) {
-        isAuthenticated = user.password === password;
-      }
     }
 
     if (!user || !isAuthenticated) {
       return sendJson(response, 401, { message: "Username/Email atau password salah." });
     }
 
-    const isAdmin = user.role === "admin" || user.username === "admin";
-    return sendJson(response, 200, {
-      success: true,
-      role: isAdmin ? "admin" : "user",
-      name: user.fullname || user.nama,
-      userId: user.username || user.email,
-      user,
-    });
+    return sendJson(response, 200, { success: true, ...await createSession(user) });
   }
 
   if (request.method === "GET" && /^\/api\/users\/[^/]+$/.test(pathname)) {
     const id = decodeURIComponent(pathname.slice("/api/users/".length));
+    if (!principal) return sendJson(response, 401, { message: "Masuk untuk membuka profil." });
+    if (id !== principal.username && id !== principal.email) return sendJson(response, 403, { message: "Anda hanya dapat membuka profil sendiri." });
     try {
       const result = await pool.query(
         "SELECT id, username, fullname, nama, email, no_telepon, alamat, foto, nik FROM users WHERE username = $1 OR email = $1",
@@ -1428,8 +2009,8 @@ const next = {
     return new Promise((resolve, reject) => {
       upload.single("foto")(request, response, async (err) => {
         if (err) {
-          console.error("Multer error:", err);
-          sendJson(response, 400, { message: "Gagal mengunggah foto." });
+          logUploadError("Upload foto profil", err);
+          sendJson(response, 400, { message: uploadErrorMessage(err) });
           return resolve();
         }
 
@@ -1474,6 +2055,25 @@ const next = {
 };
 
 const serveStatic = async (response, pathname) => {
+  if (pathname.startsWith("/uploads/")) {
+    const filename = decodeURIComponent(pathname.slice("/uploads/".length));
+    if (!filename || basename(filename) !== filename) {
+      response.writeHead(404, { "Content-Type": "text/plain" });
+      return response.end("File tidak ditemukan.");
+    }
+    try {
+      const filePath = join(uploadDir, filename);
+      const fileStat = await stat(filePath);
+      if (!fileStat.isFile()) throw new Error("not-file");
+
+      response.writeHead(200, { "Content-Type": uploadMimeType(filePath) });
+      return createReadStream(filePath).pipe(response);
+    } catch (e) {
+      response.writeHead(404, { "Content-Type": "text/plain" });
+      return response.end("File tidak ditemukan.");
+    }
+  }
+
   const requested = pathname === "/" ? "/index.html" : pathname;
   const filePath = normalize(join(root, "dist", requested));
 
@@ -1509,9 +2109,9 @@ const serveStatic = async (response, pathname) => {
 
 const server = http.createServer(async (request, response) => {
   try {
-    const pathname = new URL(request.url, `http://${request.headers.host}`).pathname;
-    if (pathname.startsWith("/api/")) await handleApi(request, response, pathname);
-    else await serveStatic(response, pathname);
+    const url = new URL(request.url, `http://${request.headers.host}`);
+    if (url.pathname.startsWith("/api/")) await handleApi(request, response, url);
+    else await serveStatic(response, url.pathname);
   } catch (error) {
     console.error(error);
     if (!response.headersSent) {
@@ -1520,14 +2120,38 @@ const server = http.createServer(async (request, response) => {
   }
 });
 
-initDatabase()
-  .then(() =>
+connectDatabase()
+  .then((databasePool) => {
+    pool = databasePool;
+    return initDatabase();
+  })
+  .then(() => {
     server.listen(port, "0.0.0.0", () => {
       console.log(`Berhasil terhubung ke database PostgreSQL!`);
       console.log(`E-Aspirasi listening on port ${port}`);
-    }),
-  )
+    });
+  })
   .catch((error) => {
-    console.error("Database connection failed:", error);
+    console.error("Database connection failed:", error.message);
+    if (error.failures?.length) {
+      for (const failure of error.failures) {
+        console.error(" -", failure);
+      }
+    }
+    if (!process.env.RAILWAY_ENVIRONMENT && error.code === "DB_CONNECT_FAILED") {
+      console.error(
+        "Catatan lokal: host *.railway.internal hanya bisa diakses dari dalam Railway. Gunakan DATABASE_PUBLIC_URL dari service PostgreSQL Railway atau PostgreSQL lokal.",
+      );
+    }
+    if (error.code === "DB_CONNECT_FAILED" && error.failures?.some((failure) => failure.includes(".proxy.rlwy.net"))) {
+      console.error(
+        "DATABASE_URL mengarah ke public proxy Railway. Di service aplikasi, gunakan DATABASE_URL=${{Postgres.DATABASE_URL}} (host *.railway.internal).",
+      );
+    }
+    if (error.code === "DB_CONNECT_FAILED" && error.failures?.some((failure) => failure.includes("ECONNREFUSED"))) {
+      console.error(
+        "PostgreSQL menolak koneksi. Pastikan service database berstatus Running dan berada di project/environment yang sama dengan service aplikasi.",
+      );
+    }
     process.exit(1);
   });

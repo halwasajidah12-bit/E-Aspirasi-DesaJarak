@@ -13,6 +13,7 @@ export default function App() {
 
   const handleLogin = async (credentials) => {
     const result = await login(credentials)
+    localStorage.setItem('token', result.token)
     setSession({ role: result.role, name: result.name, userId: result.userId })
     setScreen(result.role === 'admin' ? 'admin' : 'user')
     return result
@@ -20,6 +21,7 @@ export default function App() {
 
   const handleRegister = async (credentials) => {
     const result = await register(credentials)
+    localStorage.setItem('token', result.token)
     setSession({ role: 'user', name: result.name, userId: result.userId })
     setScreen('user')
     return result
@@ -27,6 +29,7 @@ export default function App() {
 
   const handleGuest = () => {
     const userId = globalThis.crypto?.randomUUID?.() || `guest-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    localStorage.removeItem('token')
     setSession({ role: 'guest', name: 'Tamu', userId })
     setScreen('user')
   }
@@ -37,6 +40,7 @@ export default function App() {
   }
 
   const handleLogout = () => {
+    localStorage.removeItem('token')
     setSession(null)
     setScreen('login')
     navigate('/') // reset citizen app's internal route so a fresh login starts at Home

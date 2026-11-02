@@ -28,6 +28,8 @@ export default function DetailLaporan({ session }) {
   const [commentText, setCommentText] = useState("");
   const [commentError, setCommentError] = useState("");
   const [sendingComment, setSendingComment] = useState(false);
+  const [voting, setVoting] = useState(false);
+  const [voteError, setVoteError] = useState("");
 
   useEffect(() => {
     let mounted = true;
@@ -253,7 +255,7 @@ const toggleDukungan = async () => {
         <div className="mt-5 rounded-xl border border-emerald-100 bg-emerald-50/60 p-3.5 flex items-center gap-3">
           <div className="flex-1">
             <p className="text-xs font-bold text-emerald-800">
-              {dukungan} Dukungan Warga
+              {Number(report.dukungan) || 0} Dukungan Warga
             </p>
             <p className="text-[10px] text-gray-500 mt-0.5">
               Beri dukungan agar laporan ini diprioritaskan.
@@ -261,15 +263,22 @@ const toggleDukungan = async () => {
           </div>
           <button
             onClick={toggleDukungan}
-            className={`flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold transition active:scale-95 ${
-              didukung
+            disabled={voting}
+            aria-pressed={Boolean(report.votedByMe)}
+            className={`flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold transition active:scale-95 disabled:opacity-60 ${
+              report.votedByMe
                 ? "bg-emerald-600 text-white shadow-sm"
                 : "bg-white text-emerald-700 border border-emerald-200 hover:bg-emerald-50"
             }`}
           >
-            <ThumbsUp size={15} /> {didukung ? "Didukung" : "Dukung"}
+            <ThumbsUp size={15} /> {voting ? "Menyimpan..." : report.votedByMe ? "Didukung" : "Dukung"}
           </button>
         </div>
+        {voteError && (
+          <p role="alert" className="mt-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+            {voteError}
+          </p>
+        )}
 
         <div className="mt-6">
           <p className="text-sm font-bold text-emerald-900 mb-4">

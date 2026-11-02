@@ -4,7 +4,8 @@
   "version": "1.0.0",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "start": "npm --prefix DesaJarak run start"
+    "start": "npm --prefix DesaJarak run start",
+    "test:ai": "node scripts/ai-test.mjs"
   },
   "engines": {
     "node": ">=20"

@@ -1,4 +1,3 @@
-
 import { useEffect, useState, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { Search, Plus, Filter } from "lucide-react";
@@ -15,34 +14,47 @@ export default function VotePrioritas({ session }) {
   const [laporanData, setLaporanData] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // Mengambil laporan langsung dari backend
-  useEffect(() => {
-    let mounted = true;
+const [loadError, setLoadError] = useState("");
 
-    const refreshReports = () => {
-      getReports()
-        .then((items) => {
-          if (mounted) {
-            setLaporanData(items.map(mapApiReport));
-            setLoading(false);
-          }
-        })
-        .catch((error) => {
-          console.error("Gagal mengambil laporan:", error);
-          if (mounted) setLoading(false);
-        });
-    };
+const handleReportUpdate = (updated) => {
+  setLaporanData((items) =>
+    items.map((item) =>
+      String(item.id) === String(updated.id)
+        ? mapApiReport(updated)
+        : item
+    )
+  );
+};
 
-    refreshReports();
+useEffect(() => {
+  let mounted = true;
 
-    // Memperbarui data setiap 3 detik
-    const interval = setInterval(refreshReports, 3000);
+  const refresh = async () => {
+    try {
+      const items = await getReports();
 
-    return () => {
-      mounted = false;
-      clearInterval(interval);
+      if (mounted) {
+        setLaporanData(items.map(mapApiReport));
+        setLoadError("");
+      }
+    } catch (error) {
+      if (mounted) {
+        setLoadError(error.message || "Gagal memuat laporan.");
+      }
+    } finally {
+      if (mounted) setLoading(false);
+    }
   };
-  }, []);
+
+  refresh();
+
+  const interval = setInterval(refresh, 5000);
+
+  return () => {
+    mounted = false;
+    clearInterval(interval);
+  };
+}, []);
 
   const laporan = useMemo(() => {
     const q = query.toLowerCase();
@@ -83,7 +95,13 @@ export default function VotePrioritas({ session }) {
     return engagementB - engagementA;
   });
 }
-
+    if (active === "Terbaru") {
+      list = [...list].sort((a, b) => new Date(b.submittedAt || 0) - new Date(a.submittedAt || 0));
+    }
+    if (active === "2 Bulan Terakhir") {
+      const cutoff = Date.now() - 60 * 24 * 60 * 60 * 1000;
+      list = list.filter((report) => !report.submittedAt || new Date(report.submittedAt).getTime() >= cutoff);
+    }
     return list;
   }, [active, query, laporanData]);
 
@@ -136,23 +154,31 @@ export default function VotePrioritas({ session }) {
         </div>
 
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {loading ? (
-            <p className="md:col-span-full text-center text-xs text-gray-500 py-8">
-              Memuat laporan...
-            </p>
-          ) : (
-            <>
-              {laporan.map((r) => (
-                <ReportCard key={r.id} report={r} session={session} />
-              ))}
-
-              {laporan.length === 0 && (
-                <p className="md:col-span-full text-center text-xs text-gray-500 font-medium py-8 bg-white rounded-2xl border border-gray-100">
-                  Tidak ada laporan ditemukan.
-                </p>
-              )}
-            </>
-          )}
+{loading ? (
+  <p className="md:col-span-full text-center text-xs text-gray-500 py-8">
+    Memuat laporan...
+  </p>
+) : loadError ? (
+  <p
+    role="alert"
+    className="md:col-span-full text-center text-xs text-rose-700 font-medium py-8 bg-white rounded-2xl border border-rose-100"
+  >
+    Gagal memuat laporan: {loadError}
+  </p>
+) : laporan.length === 0 ? (
+  <p className="md:col-span-full text-center text-xs text-gray-500 font-medium py-8 bg-white rounded-2xl border border-gray-100">
+    Tidak ada laporan ditemukan.
+  </p>
+) : (
+  laporan.map((r) => (
+    <ReportCard
+      key={r.id}
+      report={r}
+      session={session}
+      onReportUpdate={handleReportUpdate}
+    />
+  ))
+)}
         </div>
       </div>
     </div>

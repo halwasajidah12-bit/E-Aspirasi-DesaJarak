@@ -1,37 +1,69 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, ScanLine, Camera } from "lucide-react";
-import { createReport, getCategories } from "../../utils/api.js";
+import { createReport, getCategories, uploadImage, checkDuplicates } from "../../utils/api.js";
 
-const steps = ["Lokasi", "Detail", "Foto"];
+const MAX_PHOTO_SIZE = 5 * 1024 * 1024;
+const PHOTO_TYPES = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"]);
 
-function Stepper({ current }) {
-  return (
-    <div className="flex items-center justify-center gap-2 mt-1">
-      {steps.map((label, i) => (
-        <div key={label} className="flex items-center gap-2">
-          <div className="flex items-center gap-1.5">
-            <span
-              className={`h-6 w-6 rounded-full flex items-center justify-center text-[11px] font-bold ${
-                i <= current ? "bg-emerald-600 text-white" : "bg-gray-200 text-gray-400"
-              }`}
-            >
-              {i + 1}
-            </span>
-            <span className={`text-xs font-medium ${i <= current ? "text-emerald-700" : "text-gray-400"}`}>
-              {label}
-            </span>
-          </div>
-          {i < steps.length - 1 && <span className="w-6 h-px bg-gray-300" />}
+const readPhoto = (file) =>
+  new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Foto tidak dapat dibaca. Gunakan format JPG, PNG, WebP, atau GIF."));
+    };
+    image.src = url;
+  });
+
+const preparePhoto = async (file) => {
+  if (!PHOTO_TYPES.has(file.type)) {
+    throw new Error("Format foto harus JPG, PNG, WebP, atau GIF.");
+  }
+  if (file.size <= MAX_PHOTO_SIZE) return file;
+
+  const image = await readPhoto(file);
+  const maxSide = 1600;
+  const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Foto gagal diproses. Coba pilih foto lain.");
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.82));
+  if (!blob) throw new Error("Foto gagal diproses. Coba pilih foto lain.");
+  if (blob.size > MAX_PHOTO_SIZE) throw new Error("Ukuran foto masih lebih dari 5 MB setelah dikompres.");
+  return new File([blob], `${file.name.replace(/\.[^.]+$/, "") || "foto"}.jpg`, { type: "image/jpeg" });
+};
+
+const Stepper = ({ current }) => (
+  <div className="flex items-center justify-center gap-2 mb-5">
+    {["Lokasi", "Detail", "Foto"].map((label, idx) => (
+      <div key={label} className="flex items-center gap-2">
+        <div
+          className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold transition ${
+            idx === current ? "bg-emerald-600 text-white" : idx < current ? "bg-emerald-100 text-emerald-600" : "bg-gray-100 text-gray-400"
+          }`}
+        >
+          {idx + 1}
         </div>
-      ))}
-    </div>
-  );
-}
+        <span className="text-xs font-medium text-gray-600">{label}</span>
+        {idx < 2 && <span className="w-8 h-px bg-gray-200" />}
+      </div>
+    ))}
+  </div>
+);
 
-export default function Aspirasi({ session }) {
+function Aspirasi({ session }) {
   const [step, setStep] = useState(0);
-  const [dbCategories, setDbCategories] = useState([]);
   const [form, setForm] = useState({
     lokasi: "",
     rt: "",
@@ -41,13 +73,144 @@ export default function Aspirasi({ session }) {
     judul: "",
     kategori: "",
     deskripsi: "",
+    infrastructureId: "",
+    latitude: "",
+    longitude: "",
+    locationAccuracy: "",
+    locationSource: "",
   });
-  const navigate = useNavigate();
+  const [dbCategories, setDbCategories] = useState([]);
+  const [photo, setPhoto] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState("");
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [submitError, setSubmitError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [duplicateWarning, setDuplicateWarning] = useState(null);
+  const [scanActive, setScanActive] = useState(false);
+  const [scanError, setScanError] = useState("");
+  const [scanMessage, setScanMessage] = useState("");
+  const [gpsBusy, setGpsBusy] = useState(false);
+  const videoRef = useRef(null);
+  const photoInputRef = useRef(null);
+  const navigate = useNavigate();
 
-  const [files, setFiles] = useState([]);
-  const [previews, setPreviews] = useState([]);
-  const fileInputRef = useRef(null);
+  const captureGpsLocation = useCallback((source) => {
+    setScanError("");
+    setScanMessage(source === "qr" ? "QR terbaca. Meminta lokasi GPS perangkat..." : "Meminta lokasi GPS perangkat...");
+    setGpsBusy(true);
+    setForm((current) => ({
+      ...current,
+      ...(current.locationSource ? { lokasi: "" } : {}),
+      latitude: "",
+      longitude: "",
+      locationAccuracy: "",
+      locationSource: "",
+    }));
+
+    if (!navigator.geolocation) {
+      setScanMessage("");
+      setScanError("GPS/lokasi tidak tersedia di browser ini. Isi lokasi laporan secara manual.");
+      setGpsBusy(false);
+      return;
+    }
+    if (!window.isSecureContext) {
+      setScanMessage("");
+      setScanError("GPS hanya dapat digunakan melalui HTTPS atau localhost.");
+      setGpsBusy(false);
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude, accuracy } = position.coords;
+        const locationAccuracy = Number.isFinite(accuracy) ? Math.max(0, Math.round(accuracy)) : "";
+        setForm((current) => ({
+          ...current,
+          lokasi: `GPS ${latitude.toFixed(6)}, ${longitude.toFixed(6)}`,
+          latitude,
+          longitude,
+          locationAccuracy,
+          locationSource: source === "qr" ? "qr-gps" : "gps",
+        }));
+        setScanMessage(`Lokasi GPS berhasil diambil${locationAccuracy !== "" ? ` (akurasi sekitar ${locationAccuracy} m)` : ""}.`);
+        setScanError("");
+        setGpsBusy(false);
+      },
+      (error) => {
+        const message = error.code === error.PERMISSION_DENIED
+          ? "Izin lokasi ditolak. Izinkan akses lokasi di browser, lalu coba lagi."
+          : error.code === error.POSITION_UNAVAILABLE
+            ? "Posisi GPS belum tersedia. Aktifkan lokasi/GPS perangkat dan coba lagi."
+            : error.code === error.TIMEOUT
+              ? "Pengambilan lokasi GPS melewati batas waktu. Coba lagi di area dengan sinyal GPS lebih baik."
+              : "Lokasi GPS gagal diambil. Isi lokasi laporan secara manual.";
+        setScanMessage("");
+        setScanError(message);
+        setGpsBusy(false);
+      },
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 },
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!scanActive) return undefined;
+    let cancelled = false;
+    let controls;
+    let decoded = false;
+    const startScanner = async () => {
+      if (!window.isSecureContext) {
+        setScanError("Kamera hanya dapat digunakan melalui HTTPS atau localhost.");
+        setScanActive(false);
+        return;
+      }
+      if (!navigator.mediaDevices?.getUserMedia) {
+        setScanError("Kamera tidak tersedia di browser ini. Isi lokasi secara manual.");
+        setScanActive(false);
+        return;
+      }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        videoRef.current.srcObject = stream;
+        const codeReader = new window.ZXing.BrowserQRCodeReader();
+        controls = await codeReader.decodeFromVideoDevice(null, videoRef.current, (result, err) => {
+          if (result && !decoded) {
+            decoded = true;
+            controls.stop();
+            stream.getTracks().forEach((track) => track.stop());
+            if (videoRef.current) videoRef.current.srcObject = null;
+            captureGpsLocation("qr");
+            setScanActive(false);
+          }
+          if (err && err.name !== "NotFoundException") {
+            setScanError("Gagal memindai QR. Coba lagi.");
+            setScanActive(false);
+            stream.getTracks().forEach((track) => track.stop());
+          }
+        });
+      } catch (error) {
+        const message = error.name === "NotAllowedError"
+          ? "Izin kamera ditolak. Izinkan akses kamera di browser, lalu coba lagi."
+          : error.name === "NotFoundError"
+            ? "Kamera tidak ditemukan di perangkat ini."
+            : "Kamera gagal dibuka. Periksa izin kamera atau isi lokasi secara manual.";
+        setScanError(message);
+        setScanActive(false);
+      }
+    };
+
+    startScanner();
+    return () => {
+      cancelled = true;
+      controls?.stop();
+      const stream = videoRef.current?.srcObject;
+      stream?.getTracks().forEach((track) => track.stop());
+      if (videoRef.current) videoRef.current.srcObject = null;
+    };
+  }, [scanActive, captureGpsLocation]);
 
   // Tarik data kategori dinamis dari database saat form dibuka
   useEffect(() => {
@@ -55,20 +218,37 @@ export default function Aspirasi({ session }) {
     getCategories()
       .then((items) => {
         if (mounted) {
-          // Ambil hanya nama_kategori
-          setDbCategories(items.map(item => item.nama_kategori));
+          setDbCategories(items.map((item) => item.nama_kategori));
         }
       })
       .catch(() => {
         if (mounted) {
-          // Fallback jika API gagal
           setDbCategories(["Jalan", "Jembatan", "Listrik", "Air", "Drainase", "Lainya"]);
         }
       });
     return () => (mounted = false);
   }, []);
 
+  useEffect(() => () => {
+    if (photoPreview) URL.revokeObjectURL(photoPreview);
+  }, [photoPreview]);
+
   const update = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+  const [formErrors, setFormErrors] = useState({});
+  const [showErrors, setShowErrors] = useState(false);
+  const validateStep = (stepNum) => {
+    const errors = {};
+    if (stepNum === 0) {
+      if (!form.lokasi) errors.lokasi = "Lokasi laporan wajib diisi.";
+    }
+    if (stepNum === 1) {
+      if (!form.judul) errors.judul = "Judul laporan wajib diisi.";
+      if (!form.kategori) errors.kategori = "Kategori laporan wajib dipilih.";
+      if (!form.deskripsi) errors.deskripsi = "Deskripsi laporan wajib diisi.";
+    }
+    setFormErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
 
   const titleByStep = ["Aspirasi", "Aspirasi", "Buat Pengaduan"];
   const subtitleByStep = [
@@ -76,6 +256,53 @@ export default function Aspirasi({ session }) {
     "Sampaikan Aspirasi/Pengaduan",
     "Laporkan masalah melalui form",
   ];
+
+  const sendReport = async () => {
+    setSubmitting(true);
+    try {
+      const image = photo ? (await uploadImage(photo)).image : "";
+      await createReport({ ...form, image }, { ownerId: session?.userId, ownerName: session?.name });
+      navigate("/lacak");
+    } catch (error) {
+      setSubmitError(error.message || "Laporan gagal dikirim.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Tombol "Kirim Laporan": cek duplikasi dulu, tampilkan peringatan bila ada
+  // laporan serupa, dan tetap kirim hanya setelah warga mengonfirmasi.
+  const handleSubmitClick = async () => {
+    setSubmitError("");
+    if (step === 0 && !form.lokasi.trim()) return setSubmitError("Lokasi laporan wajib diisi.");
+    if (step === 1 && (!form.judul.trim() || !form.kategori || !form.deskripsi.trim())) {
+      return setSubmitError("Judul, kategori, dan deskripsi laporan wajib diisi.");
+    }
+    if (step < 2) return setStep((s) => s + 1);
+    if (session?.role === "guest") return setSubmitError("Masuk atau buat akun warga sebelum mengirim laporan.");
+    // Sudah dikonfirmasi lewat panel peringatan → langsung kirim.
+    if (duplicateWarning) return sendReport();
+    setSubmitting(true);
+    try {
+      const check = await checkDuplicates({
+        judul: form.judul,
+        deskripsi: form.deskripsi,
+        lokasi: form.lokasi,
+        rt: form.rt,
+        rw: form.rw,
+      }).catch(() => null);
+      const duplicates = check?.duplicates || [];
+      if (duplicates.length) {
+        setDuplicateWarning(duplicates);
+        return;
+      }
+      await sendReport();
+    } catch (error) {
+      setSubmitError(error.message || "Gagal memeriksa duplikasi laporan.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <div className="px-4 sm:px-6 py-4 pb-8 space-y-3.5">
@@ -100,13 +327,34 @@ export default function Aspirasi({ session }) {
 
         {step === 0 && (
           <div className="mt-6">
-            <div className="border-2 border-dashed border-emerald-200 bg-emerald-50/50 rounded-2xl flex flex-col items-center py-8 px-4">
-              <ScanLine size={40} className="text-emerald-600" />
-              <p className="text-sm font-bold text-gray-800 mt-3">Scan QR CODE</p>
-              <p className="text-xs text-gray-500 text-center mt-1">
-                Scan QR di titik infrastruktur
-              </p>
+            <div className="border-2 border-dashed border-emerald-200 bg-emerald-50/50 rounded-2xl flex flex-col items-center py-5 px-4">
+              {scanActive ? (
+                <>
+                  <video ref={videoRef} muted playsInline className="w-full max-w-sm aspect-video rounded-xl bg-black object-cover" />
+                  <p className="text-xs text-gray-600 text-center mt-3">Pindai QR di lokasi laporan. Setelah terbaca, aplikasi mengambil posisi GPS ponsel.</p>
+                  <button type="button" onClick={() => setScanActive(false)} className="mt-3 rounded-lg border border-gray-300 bg-white px-4 py-2 text-xs font-semibold text-gray-700">Tutup kamera</button>
+                </>
+              ) : (
+                <>
+                  <ScanLine size={40} className="text-emerald-600" />
+                  <p className="text-sm font-bold text-gray-800 mt-3">Scan QR CODE</p>
+                  <p className="text-xs text-gray-500 text-center mt-1">QR yang sama bisa dipakai di tiap tempat. Lokasi laporan ditentukan dari GPS ponsel saat dipindai.</p>
+                  <button type="button" disabled={gpsBusy} onClick={() => { setScanError(""); setScanMessage(""); setScanActive(true); }} className="mt-3 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-500 disabled:opacity-60">Buka pemindai QR</button>
+                </>
+              )}
             </div>
+            {scanError && <p role="alert" className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{scanError}</p>}
+            {scanMessage && <p role="status" className="mt-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700">{scanMessage}</p>}
+            {form.latitude !== "" && form.longitude !== "" && (
+              <a
+                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${form.latitude},${form.longitude}`)}`}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-2 block text-center text-xs font-medium text-emerald-700 underline"
+              >
+                Lihat titik GPS di peta{form.locationAccuracy !== "" ? ` · akurasi ±${form.locationAccuracy} m` : ""}
+              </a>
+            )}
 
             <div className="flex items-center gap-3 my-5">
               <span className="h-px bg-gray-200 flex-1" />
@@ -192,57 +440,47 @@ export default function Aspirasi({ session }) {
           </div>
         )}
 
-          {step === 2 && (
-            <div className="mt-6">
-              <p className="text-center text-xs text-gray-400 mb-4">Foto Laporan</p>
-              <p className="text-xs font-semibold text-gray-700 mb-1">Foto Lokasi (Opsional)</p>
-              <label className="border-2 border-dashed border-emerald-200 bg-emerald-50/50 hover:bg-emerald-50 transition rounded-2xl flex flex-col items-center justify-center py-10 cursor-pointer">
-                <Camera size={34} className="text-emerald-600" />
-                <p className="text-sm font-bold mt-3 text-gray-700">ambil foto/pilih dari galeri</p>
-                <p className="text-xs text-gray-400 mt-1">maks 5 foto, 5 MB .jpg .png .gif</p>
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  max={5}
-                  className="hidden"
-                  ref={fileInputRef}
-                  onChange={(e) => {
-                    const newFiles = Array.from(e.target.files || []).slice(0, 5);
-                    const validFiles = newFiles.filter((f) => f.size <= 5 * 1024 * 1024);
-                    setFiles(validFiles);
-                    setPreviews(validFiles.map((f) => URL.createObjectURL(f)));
-                  }}
-                />
-              </label>
+        {step === 2 && (
+          <div className="mt-6">
+            <p className="text-center text-xs text-gray-400 mb-4">Foto Laporan</p>
+            <p className="text-xs font-semibold text-gray-700 mb-1">Foto Lokasi (Opsional)</p>
+            <label className="border-2 border-dashed border-emerald-200 bg-emerald-50/50 hover:bg-emerald-50 transition rounded-2xl flex flex-col items-center justify-center py-10 cursor-pointer">
+              <Camera size={34} className="text-emerald-600" />
+              <p className="text-sm font-bold mt-3 text-gray-700">ambil foto/pilih dari galeri</p>
+              <p className="text-xs text-gray-400 mt-1">1 foto, maksimal 5 MB (JPG, PNG, WebP, GIF)</p>
+              <input
+                ref={photoInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                className="hidden"
+                disabled={photoBusy}
+                onChange={async (event) => {
+                  const selected = event.target.files?.[0];
+                  if (!selected) return;
+                  setSubmitError("");
+                  setPhotoBusy(true);
+                  try {
+                    const prepared = await preparePhoto(selected);
+                    setPhoto(prepared);
+                    setPhotoPreview(URL.createObjectURL(prepared));
+                  } catch (error) {
+                    setSubmitError(error.message);
+                    if (photoInputRef.current) photoInputRef.current.value = "";
+                  } finally {
+                    setPhotoBusy(false);
+                  }
+                }}
+              />
+            </label>
+            {photoBusy && <p className="text-xs text-emerald-700 mt-2">Memproses foto...</p>}
+            {photoPreview && <img src={photoPreview} alt="Foto laporan" className="mt-3 w-full max-h-56 rounded-xl object-cover" />}
+          </div>
+        )}
 
-              {previews.length > 0 && (
-                <div className="grid grid-cols-5 gap-2 mt-4">
-                  {previews.map((src, i) => (
-                    <div key={i} className="relative aspect-square rounded-xl overflow-hidden border border-gray-200">
-                      <img src={src} alt={`Preview ${i + 1}`} className="w-full h-full object-cover" />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const updated = files.filter((_, idx) => idx !== i);
-                          setFiles(updated);
-                          const newPreviews = updated.map((f) => URL.createObjectURL(f));
-                          previews.forEach((p) => URL.revokeObjectURL(p));
-                          setPreviews(newPreviews);
-                        }}
-                        className="absolute top-0.5 right-0.5 bg-rose-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+        {submitError && <p role="alert" className="mt-4 rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 text-xs text-rose-700">{submitError}</p>}
 
         <div className="flex gap-3 mt-6">
-            {step > 0 && (
+          {step > 0 && (
             <button
               onClick={() => setStep((s) => s - 1)}
               className="flex-1 rounded-xl border border-emerald-300 text-emerald-700 hover:bg-emerald-50 py-3 text-xs font-semibold transition active:scale-95"
@@ -251,29 +489,53 @@ export default function Aspirasi({ session }) {
             </button>
           )}
           <button
-            onClick={async () => {
-              if (step < 2) return setStep((s) => s + 1)
-              setSubmitting(true)
-              try {
-
-                await createReport(form, { ownerId: session?.userId, ownerName: session?.name }, files)
-                files.forEach((f) => URL.revokeObjectURL(URL.createObjectURL(f)));
-                setFiles([]);
-                setPreviews([]);
-                if (fileInputRef.current) fileInputRef.current.value = "";
-                navigate("/lacak")
-              } finally {
-                setSubmitting(false)
-              }
-            }}
-            disabled={submitting}
+            onClick={handleSubmitClick}
+            disabled={submitting || photoBusy}
             className={`flex-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white py-3 text-xs font-bold shadow-md transition active:scale-95 disabled:opacity-60 ${
               step === 0 ? "w-full" : ""
             }`}
           >
-            {submitting ? "Mengirim..." : step < 2 ? "Lanjutkan" : "Kirim Laporan"}
+            {photoBusy ? "Memproses foto..." : submitting ? "Mengirim..." : step < 2 ? "Lanjutkan" : "Kirim Laporan"}
           </button>
         </div>
+
+        {duplicateWarning && (
+          <div className="mt-4 rounded-xl bg-amber-50 border border-amber-300 px-3 py-3 space-y-2" role="alert">
+            <p className="text-xs font-bold text-amber-800">&#9888;&#65039; Laporan serupa terdeteksi</p>
+            {duplicateWarning.map((item) => (
+              <div key={item.reportId} className="rounded-lg bg-white border border-amber-200 px-2.5 py-2 text-[11px] text-gray-700 space-y-0.5">
+                <p className="font-semibold text-gray-800">
+                  {item.title} <span className="text-gray-400">({item.reportId} &middot; {item.status})</span>
+                </p>
+                {item.location && <p>Lokasi: {item.location}</p>}
+                <p className="text-amber-700">
+                  Kemiripan {Math.round((item.similarity ?? 0) * 100)}%{item.verified ? " &middot; dikonfirmasi AI" : " (pemeriksaan lokal)"}
+                  {item.reason ? ` — ${item.reason}` : ""}
+                </p>
+              </div>
+            ))}
+            <p className="text-[11px] text-gray-600">
+              Cek dulu menu <span className="font-semibold">Lacak Laporan</span> agar tidak ada pengaduan ganda. Tetap kirim hanya jika masalah Anda memang berbeda atau lebih parah.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => { setDuplicateWarning(null); sendReport(); }}
+                disabled={submitting}
+                className="flex-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white py-2 text-xs font-bold transition active:scale-95 disabled:opacity-60"
+              >
+                {submitting ? "Mengirim..." : "Tetap Kirim"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setDuplicateWarning(null)}
+                className="flex-1 rounded-lg border border-amber-400 text-amber-800 hover:bg-amber-100 py-2 text-xs font-semibold"
+              >
+                Periksa Kembali
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -290,3 +552,4 @@ function Field({ label, required, children, className = "" }) {
     </label>
   );
 }
+export default Aspirasi;

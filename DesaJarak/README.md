@@ -53,10 +53,24 @@ npm run preview
 
 ### Railway PostgreSQL
 
-Backend membaca `DATABASE_URL` atau variabel koneksi `PG*` dari environment service aplikasi. Di **service aplikasi** Railway, tambahkan `DATABASE_URL` sebagai Variable Reference ke service PostgreSQL. Ganti `Postgres` di bawah dengan nama service PostgreSQL persis seperti yang tampil di project Railway:
+Di **service aplikasi** Railway (bukan service PostgreSQL), tambahkan satu variable reference:
 
 ```text
-DATABASE_URL=postgresql://${{Postgres.POSTGRES_USER}}:${{Postgres.POSTGRES_PASSWORD}}@${{Postgres.RAILWAY_PRIVATE_DOMAIN}}:5432/${{Postgres.POSTGRES_DB}}
+DATABASE_URL=${{Postgres.DATABASE_URL}}
 ```
 
-Pastikan service aplikasi dan PostgreSQL berada di project/environment Railway yang sama dan terhubung melalui private network. `DATABASE_URL` diprioritaskan jika tersedia. Alternatifnya, tambahkan `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, dan `PGDATABASE` ke service aplikasi menggunakan Variable Reference ke service PostgreSQL. Jangan menaruh password langsung di source code atau repository. `PGDATA` dan `SSL_CERT_DAYS` adalah konfigurasi service PostgreSQL dan tidak dibaca oleh backend. Saat pertama kali berjalan, server membuat tabel `users` dan `app_data`, lalu memasukkan data awal dari `src/data/initialData.js` dan `src/user/data/`.
+Ganti `Postgres` dengan nama service PostgreSQL persis seperti yang tampil di project Railway. Nilai ini otomatis memakai host internal `postgres.railway.internal`. Jangan menyalin `DATABASE_PUBLIC_URL` atau URL `*.proxy.rlwy.net` ke service aplikasi. Jangan set `PORT` manual karena Railway mengisinya otomatis.
+
+Pastikan service aplikasi dan PostgreSQL berada di project/environment Railway yang sama. Alternatifnya, tambahkan `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, dan `PGDATABASE` ke service aplikasi menggunakan Variable Reference ke service PostgreSQL. Jangan menaruh password langsung di source code atau repository. `PGDATA` dan `SSL_CERT_DAYS` adalah konfigurasi service PostgreSQL dan tidak dibaca oleh backend.
+
+Untuk pengembangan lokal, gunakan `DATABASE_PUBLIC_URL` dari service PostgreSQL Railway atau PostgreSQL lokal. Host `*.railway.internal` hanya bisa diakses dari dalam Railway. Saat pertama kali berjalan, server membuat tabel `users` dan `app_data`, lalu memasukkan data awal dari `src/data/initialData.js` dan `src/user/data/`.
+
+### Upload Foto di Railway
+
+Foto disimpan di folder `uploads/` pada disk container. Agar foto tetap tersedia setelah redeploy atau restart, tambahkan volume pada **service aplikasi** Railway dan mount di:
+
+```text
+/app/DesaJarak/uploads
+```
+
+Jangan mount volume di `/app` atau `/app/DesaJarak` karena dapat menimpa file aplikasi. Format foto yang didukung adalah JPG, PNG, WebP, dan GIF dengan ukuran maksimal 5 MB. Foto yang lebih besar akan dikompres otomatis di browser sebelum diunggah.

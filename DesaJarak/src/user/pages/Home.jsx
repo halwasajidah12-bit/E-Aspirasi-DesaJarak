@@ -1,22 +1,52 @@
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Plus, History, FileText, FolderOpen, Loader2, Users, ThumbsUp, ChevronRight, Trophy } from "lucide-react";
-import { laporanData, laporanStats, statusColor } from "../data/laporan";
+import { mapApiReport, statusColor } from "../data/laporan";
 import { beritaData } from "../data/berita";
 import { profilDesa } from "../data/profilDesa";
+import { getReports } from "../../utils/api.js";
 
-// Statistik dihitung dari laporanData (satu sumber data yang sama dengan
-// dashboard admin) supaya angkanya tidak asal/berbeda sendiri.
-const stats = [
-  { icon: FileText, value: laporanStats.total, label: "Total Aspirasi", iconBg: "bg-emerald-50 text-emerald-600", valueClass: "text-gray-800" },
-  { icon: FolderOpen, value: laporanStats.masuk, label: "Aspirasi Masuk", iconBg: "bg-emerald-50 text-emerald-600", valueClass: "text-emerald-600" },
-  { icon: Loader2, value: laporanStats.diproses, label: "Sedang Diproses", iconBg: "bg-amber-50 text-amber-600", valueClass: "text-amber-600" },
-  { icon: Users, value: laporanStats.selesai, label: "Terselesaikan", iconBg: "bg-blue-50 text-blue-600", valueClass: "text-emerald-600" },
-];
-
-const laporanTerbaru = laporanData.slice(0, 2);
 const berita = beritaData.slice(0, 3);
 
 export default function Home() {
+  const [laporanData, setLaporanData] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+
+  useEffect(() => {
+    let mounted = true;
+    const refresh = async () => {
+      try {
+        const items = await getReports();
+        if (mounted) {
+          setLaporanData(items.map(mapApiReport));
+          setLoadError("");
+        }
+      } catch (error) {
+        if (mounted) setLoadError(error.message || "Gagal memuat laporan.");
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    };
+    refresh();
+    const interval = setInterval(refresh, 5000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  const stats = useMemo(() => [
+    { icon: FileText, value: laporanData.length, label: "Total Aspirasi", iconBg: "bg-emerald-50 text-emerald-600", valueClass: "text-gray-800" },
+    { icon: FolderOpen, value: laporanData.filter((l) => l.status === "Masuk").length, label: "Aspirasi Masuk", iconBg: "bg-emerald-50 text-emerald-600", valueClass: "text-emerald-600" },
+    { icon: Loader2, value: laporanData.filter((l) => l.status === "Diproses").length, label: "Sedang Diproses", iconBg: "bg-amber-50 text-amber-600", valueClass: "text-amber-600" },
+    { icon: Users, value: laporanData.filter((l) => l.status === "Selesai").length, label: "Terselesaikan", iconBg: "bg-blue-50 text-blue-600", valueClass: "text-emerald-600" },
+  ], [laporanData]);
+
+  const laporanTerbaru = useMemo(() => [...laporanData]
+    .sort((a, b) => new Date(b.submittedAt || 0) - new Date(a.submittedAt || 0))
+    .slice(0, 2), [laporanData]);
+
   return (
     <div className="px-4 sm:px-6 py-4 pb-6 space-y-3.5">
       {/* Banner */}
@@ -49,6 +79,17 @@ export default function Home() {
           </Link>
         </div>
       </div>
+
+      {loadError && (
+        <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+          Gagal memuat laporan: {loadError}
+        </p>
+      )}
+      {loading && laporanData.length === 0 && (
+        <p role="status" className="rounded-xl border border-emerald-100 bg-white px-3 py-2 text-xs text-gray-500">
+          Memuat laporan...
+        </p>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
@@ -101,6 +142,9 @@ export default function Home() {
               <p className="text-[10px] text-gray-400 pt-2 border-t border-gray-100">{l.lokasi} &nbsp;·&nbsp; {l.tanggal}</p>
             </Link>
           ))}
+          {!loading && laporanTerbaru.length === 0 && (
+            <p className="md:col-span-full py-4 text-center text-xs text-gray-500">Belum ada laporan.</p>
+          )}
         </div>
       </div>
 

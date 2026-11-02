@@ -68,6 +68,7 @@ export const laporanData = [
 
 export const mapApiReport = (report) => ({
   id: report.id,
+  submittedAt: report.submittedAt || "",
   kategori: report.category,
   status: report.status,
   judul: report.title,
@@ -77,7 +78,13 @@ export const mapApiReport = (report) => ({
   rt: report.rt || "-",
   rw: report.rw || "-",
   lokasi: report.location || "-",
-  dukungan: Number(report.votes ?? report.voterIds?.length ?? 0),voterIds: report.voterIds || [],
+coordinates: report.coordinates || null,
+locationAccuracy: report.locationAccuracy ?? null,
+dukungan: Number(
+  report.votes ?? report.voterIds?.length ?? 0
+),
+voterIds: report.voterIds || [],
+
   foto: report.image || "",
   pelapor: report.author || "Warga Desa",
   ownerId: report.ownerId || "",
@@ -94,8 +101,9 @@ komentar: report.commentsList || [],
   tanggapan: report.officialReply || "",
   aiSuggestion: report.aiSuggestion || "Belum ada komentar warga.",
   statusHistory: report.statusHistory || [],
-  hasPossibleDuplicate: report.hasPossibleDuplicate ?? false,
-  possibleDuplicates: report.possibleDuplicates ?? [],
+hasPossibleDuplicate: report.hasPossibleDuplicate ?? false,
+possibleDuplicates: report.possibleDuplicates ?? [],
+votedByMe: Boolean(report.votedByMe),
 })
 
 

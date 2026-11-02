@@ -60,7 +60,7 @@ export default function App({ session, onLogout }) {
             <Route path="/" element={<Home />} />
             <Route path="/aspirasi" element={<Aspirasi session={session} />} />
             <Route path="/aspirasi/detail" element={<DetailAspirasi />} />
-            <Route path="/lacak"element={<LacakLaporan session={session} />} />
+            <Route path="/lacak" element={<LacakLaporan session={session} />} />
             <Route path="/lacak/:id" element={<DetailLaporan session={session} />} />
             <Route path="/vote" element={<VotePrioritas session={session} />} />
             <Route path="/berita" element={<BeritaDesa />} />

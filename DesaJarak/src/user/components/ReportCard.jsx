@@ -5,46 +5,32 @@ import { Calendar, MapPin, ThumbsUp } from "lucide-react";
 import { statusColor } from "../data/laporan";
 import { toggleReportVote } from "../../utils/api.js";
 
-export default function ReportCard({ report, session }) {
-  const ownerId = session?.userId || "";
+export default function ReportCard({ report, session, onReportUpdate }) {
+  const [voting, setVoting] = useState(false);
+  const [voteError, setVoteError] = useState("");
+  const canVote = session?.role === "user";
 
-  const [didukung, setDidukung] = useState(
-    (report.voterIds || []).includes(ownerId)
-  );
- const [dukungan, setDukungan] = useState(
-  Number(report.votes ?? report.dukungan ?? 0)
-);
-  const [loadingVote, setLoadingVote] = useState(false);
-
- useEffect(() => {
-  setDukungan(Number(report.votes ?? report.dukungan ?? 0));
-  setDidukung((report.voterIds || []).includes(ownerId));
-}, [report.votes, report.dukungan, report.voterIds, ownerId]);
-
-  const toggleDukungan = async (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-
-    if (!ownerId) {
-      alert("Silakan login terlebih dahulu untuk mendukung laporan.");
+  const toggleDukungan = async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setVoteError("");
+    if (!canVote) {
+      setVoteError("Masuk sebagai warga untuk mendukung laporan.");
       return;
     }
-
-    if (loadingVote) return;
-
-    setLoadingVote(true);
-
+    if (voting) return;
+    setVoting(true);
     try {
-      const result = await toggleReportVote(report.id, ownerId);
-
-      setDidukung(result.supported);
-      setDukungan(Number(result.votes || 0));
+      const updated = await toggleReportVote(report.id);
+      onReportUpdate?.(updated);
     } catch (error) {
-      alert(error.message || "Gagal menyimpan dukungan.");
+      setVoteError(error.message || "Dukungan gagal disimpan.");
     } finally {
-      setLoadingVote(false);
+      setVoting(false);
     }
   };
+
+
 const jumlahKomentar = Number(
   report.comments ?? report.commentsList?.length ?? 0
 );
@@ -96,24 +82,17 @@ const jumlahKomentar = Number(
       </div>
 
       <div className="flex items-center justify-between pt-2 border-t border-gray-100">
-       <span className="text-xs text-gray-500">
-      {dukungan} Dukungan Warga ·{" "} {Number(report.comments ?? report.commentsList?.length ?? report.komentar?.length ?? 0)} Komentar
-      </span>
+        <span className="text-xs text-gray-500">{Number(report.dukungan) || 0} Dukungan Warga</span>
         <div className="flex items-center gap-2">
           <button
             onClick={toggleDukungan}
-            disabled={loadingVote}
-            aria-label={didukung ? "Batalkan dukungan" : "Dukung laporan"}
-            className={`transition active:scale-90 disabled:opacity-50 ${
-              didukung
-                ? "text-emerald-600"
-                : "text-gray-400 hover:text-emerald-600"
-            }`}
+            disabled={voting}
+            aria-pressed={Boolean(report.votedByMe)}
+            aria-label={report.votedByMe ? "Batalkan dukungan" : "Dukung laporan"}
+            title={canVote ? (report.votedByMe ? "Batalkan dukungan" : "Dukung laporan") : "Masuk sebagai warga untuk mendukung laporan"}
+            className={`transition active:scale-90 disabled:opacity-50 ${report.votedByMe ? "text-emerald-600" : "text-gray-400 hover:text-emerald-600"}`}
           >
-            <ThumbsUp
-              size={16}
-              fill={didukung ? "currentColor" : "none"}
-            />
+            <ThumbsUp size={16} fill={report.votedByMe ? "currentColor" : "none"} />
           </button>
 
           <Link
@@ -124,6 +103,7 @@ const jumlahKomentar = Number(
           </Link>
         </div>
       </div>
+      {voteError && <p role="alert" className="text-[10px] font-medium text-rose-600">{voteError}</p>}
     </div>
   );
 }
