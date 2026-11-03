@@ -17,7 +17,14 @@ import {
   ChevronRight,
   Landmark,
 } from "lucide-react";
-import { getUserProfile } from "../../utils/api";
+import { getUserProfile, privateUploadUrl } from "../../utils/api.js";
+import ProtectedImage from "./ProtectedImage.jsx";
+
+const profileImageSource = (photo) => {
+  if (!photo) return null;
+  if (photo.startsWith("http") || photo.startsWith("blob:") || photo.startsWith("/api/uploads/")) return photo;
+  return privateUploadUrl(photo.replace(/^\/uploads\//, ""));
+};
 
 const utama = [
   { to: "/", icon: Home, label: "Beranda" },
@@ -86,7 +93,7 @@ export default function Sidebar({ open, onClose, collapsed, onToggleCollapse, se
           setUserData(prev => ({
             ...prev,
             name: data.fullname || session.name || "Warga Desa",
-            foto: data.foto ? `/uploads/${data.foto}` : prev.foto
+            foto: data.foto ? profileImageSource(data.foto) : prev.foto
           }));
         })
         .catch(() => {});
@@ -99,7 +106,7 @@ export default function Sidebar({ open, onClose, collapsed, onToggleCollapse, se
       setUserData(prev => ({
         ...prev,
         name: e.detail.fullname, // Otomatis menerima nama baru
-        foto: e.detail.previewUrl || (e.detail.foto ? `/uploads/${e.detail.foto}` : prev.foto)
+        foto: e.detail.previewUrl ? profileImageSource(e.detail.previewUrl) : (e.detail.foto ? profileImageSource(e.detail.foto) : prev.foto)
       }));
     };
 
@@ -162,7 +169,7 @@ export default function Sidebar({ open, onClose, collapsed, onToggleCollapse, se
         >
           <div className="h-9 w-9 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0 border border-emerald-200 overflow-hidden">
             {userData.foto ? (
-              <img src={userData.foto} alt="Avatar" className="w-full h-full object-cover" />
+              <ProtectedImage src={userData.foto} alt="Avatar" className="w-full h-full object-cover" />
             ) : (
               <User size={16} fill="currentColor" />
             )}

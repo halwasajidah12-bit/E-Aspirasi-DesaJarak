@@ -78,32 +78,30 @@ export const mapApiReport = (report) => ({
   rt: report.rt || "-",
   rw: report.rw || "-",
   lokasi: report.location || "-",
-coordinates: report.coordinates || null,
-locationAccuracy: report.locationAccuracy ?? null,
-dukungan: Number(
-  report.votes ?? report.voterIds?.length ?? 0
-),
-voterIds: report.voterIds || [],
-
+  coordinates: report.coordinates || null,
+  locationAccuracy: report.locationAccuracy ?? null,
+  dukungan: Number(report.votes ?? report.voterIds?.length ?? 0),
+  voterIds: report.voterIds || [],
   foto: report.image || "",
   pelapor: report.author || "Warga Desa",
   ownerId: report.ownerId || "",
+  ownerUserId: report.ownerUserId ?? "",
   ownerName: report.ownerName || report.author || "Warga Desa",
- comments: Number(
-  report.comments ?? report.commentsList?.length ?? 0
-),
-commentsList: report.commentsList || [],
-komentar: report.commentsList || [],
+  comments: Number(report.comments ?? report.commentsList?.length ?? 0),
   commentsList: report.commentsList || [],
+  komentar: report.commentsList || [],
   jumlahKomentar: report.commentsList?.length || 0,
   urgency: report.urgency || "Rendah",
   priorityReason: report.priorityReason || "",
   tanggapan: report.officialReply || "",
   aiSuggestion: report.aiSuggestion || "Belum ada komentar warga.",
   statusHistory: report.statusHistory || [],
-hasPossibleDuplicate: report.hasPossibleDuplicate ?? false,
-possibleDuplicates: report.possibleDuplicates ?? [],
-votedByMe: Boolean(report.votedByMe),
+  hasPossibleDuplicate: report.hasPossibleDuplicate ?? false,
+  possibleDuplicates: report.possibleDuplicates ?? [],
+  withdrawnAt: report.withdrawnAt || "",
+  votedByMe: Boolean(report.votedByMe),
+  // Laporan kategori umum terlihat publik; kategori khusus admin tetap tertutup.
+  visibility: report.visibility === "admin" ? "admin" : "public",
 })
 
 

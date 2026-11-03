@@ -60,7 +60,6 @@ export default function ReportDetailModal({
   }
 
   if (!report) return null
-  console.log("MODAL RENDER:", report?.id, report?.possibleDuplicates);
   const comments = report.commentsList || []
   const [tanggal = '-', ...rest] = (report.submittedAt || '-').split(' ')
   return (
@@ -78,7 +77,7 @@ export default function ReportDetailModal({
           </button>
         </div>
         <div className="space-y-3 text-xs">
-          <img src={report.image} alt="Foto Laporan" className="w-full h-40 object-cover rounded-xl border border-gray-200 shadow-inner" />
+          <ProtectedImage src={report.image} privateAccess={report.visibility !== 'public'} alt="Foto Laporan" className="w-full h-40 object-cover rounded-xl border border-gray-200 shadow-inner" />
           <div className="grid grid-cols-2 gap-2">
             <div className="bg-emerald-50 rounded-xl p-2.5 border border-emerald-100">
               <p className="text-[9px] text-gray-400">Tanggal Laporan</p>
@@ -87,6 +86,12 @@ export default function ReportDetailModal({
             <div className="bg-emerald-50 rounded-xl p-2.5 border border-emerald-100">
               <p className="text-[9px] text-gray-400">Waktu Laporan</p>
               <p className="font-bold text-gray-800 mt-0.5">{report.submittedAt ? rest.join(' ') || '-' : '-'}</p>
+            </div>
+            <div className="bg-emerald-50 rounded-xl p-2.5 border border-emerald-100">
+              <p className="text-[9px] text-gray-400">Kategori Laporan</p>
+              <p className="font-bold text-gray-800 mt-0.5">
+                {report.categoryGroup === 'Lainnya' ? `Lainnya: ${report.category || '-'}` : report.category || '-'}
+              </p>
             </div>
           </div>
 

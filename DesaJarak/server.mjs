@@ -9,6 +9,7 @@ import pg from "pg";
 import { GoogleGenAI } from "@google/genai";
 import { OAuth2Client } from "google-auth-library";
 import multer from "multer";
+import webPush from "web-push";
 
 import {
   initialProfilDesa,
@@ -554,6 +555,42 @@ const recordNotification = async ({ title, description, icon, color, action, eve
   return result.rows[0];
 };
 
+const recordUserNotification = async ({ userId, title, description, icon, color, action, eventKey }) => {
+  const result = await pool.query(
+    `INSERT INTO user_notifications (user_id, title, description, icon, color, action, event_key)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (user_id, event_key) DO NOTHING
+     RETURNING id, title, description, icon, color, action, created_at, read_at`,
+    [userId, title, description, icon, color, JSON.stringify(action), eventKey],
+  );
+  return result.rows[0];
+};
+
+const pushIsConfigured = () => Boolean(
+  process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY && process.env.VAPID_SUBJECT,
+);
+
+const sendPushToUser = async (userId, { title, body, url = "/riwayat", tag }) => {
+  if (!pushIsConfigured()) return;
+  webPush.setVapidDetails(
+    process.env.VAPID_SUBJECT,
+    process.env.VAPID_PUBLIC_KEY,
+    process.env.VAPID_PRIVATE_KEY,
+  );
+  const result = await pool.query("SELECT id, subscription FROM push_subscriptions WHERE user_id = $1", [userId]);
+  await Promise.all(result.rows.map(async (row) => {
+    try {
+      await webPush.sendNotification(row.subscription, JSON.stringify({ title, body, url, tag }), { TTL: 86400 });
+    } catch (error) {
+      if ([404, 410].includes(error.statusCode)) {
+        await pool.query("DELETE FROM push_subscriptions WHERE id = $1", [row.id]);
+      } else {
+        console.error("Pengiriman push ke perangkat warga gagal:", error.statusCode || error.message);
+      }
+    }
+  }));
+};
+
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>\"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[char]);
 
 const sendTransactionalEmail = async ({ to, subject, text, html }) => {
@@ -828,6 +865,58 @@ const mutateReports = async (mutator) => {
   }
 };
 
+const DAILY_REPORT_LIMIT = 3;
+const REPORT_QUOTA_TIME_ZONE = "Asia/Jakarta";
+
+const reportCalendarDay = (value) => {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: REPORT_QUOTA_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const fields = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  return `${fields.year}-${fields.month}-${fields.day}`;
+};
+
+const countReportsForDay = (reports, user, date = new Date()) => {
+  const day = reportCalendarDay(date);
+  return reports.filter((report) => {
+    const belongsToUser = report.ownerUserId != null
+      ? String(report.ownerUserId) === String(user.id)
+      : String(report.ownerId || "") === String(user.username || "");
+    return belongsToUser && reportCalendarDay(report.submittedAt) === day;
+  }).length;
+};
+
+const reportBelongsToUser = (report, user) => {
+  if (!user) return false;
+  return report.ownerUserId != null
+    ? String(report.ownerUserId) === String(user.id)
+    : String(report.ownerId || "") === String(user.username || "");
+};
+
+const isReportWithdrawn = (report) => Boolean(report.withdrawnAt) || report.status === "Ditarik";
+const hasReportBeenProcessed = (report) => (report.statusHistory || []).some((entry) => entry.status !== "Masuk");
+
+const canAccessReport = (report, user) => {
+  if (isAdmin(user)) return true;
+  if (report.visibility === "admin") return false;
+  if (isReportWithdrawn(report)) return reportBelongsToUser(report, user);
+  return true;
+};
+
+const isOtherReportCategory = (value) => ["lainnya", "lainya"].includes(String(value || "").trim().toLowerCase());
+
+const reportQuotaPayload = (used) => ({
+  used,
+  limit: DAILY_REPORT_LIMIT,
+  remaining: Math.max(0, DAILY_REPORT_LIMIT - used),
+  timeZone: REPORT_QUOTA_TIME_ZONE,
+});
+
 const awardPoints = async (userId, activityType, referenceId, description, points) => {
   const result = await pool.query(
     `WITH new_activity AS (
@@ -866,6 +955,14 @@ const initDatabase = async () => {
       password_salt TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      endpoint TEXT NOT NULL UNIQUE,
+      subscription JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
     CREATE TABLE IF NOT EXISTS user_sessions (
       token_hash TEXT PRIMARY KEY,
       user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -898,6 +995,19 @@ const initDatabase = async () => {
       event_key TEXT UNIQUE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       read_at TIMESTAMPTZ
+    );
+    CREATE TABLE IF NOT EXISTS user_notifications (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      icon TEXT NOT NULL,
+      color TEXT NOT NULL,
+      action JSONB NOT NULL,
+      event_key TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      read_at TIMESTAMPTZ,
+      UNIQUE (user_id, event_key)
     );
     CREATE TABLE IF NOT EXISTS komentar (
       id BIGSERIAL PRIMARY KEY,
@@ -1067,6 +1177,78 @@ const handleApi = async (request, response, url) => {
   if (request.method === "GET" && pathname === "/api/auth/session") {
     if (!principal) return sendJson(response, 401, { message: "Sesi tidak berlaku." });
     return sendJson(response, 200, safeUser(principal));
+  }
+
+  if (request.method === "GET" && pathname === "/api/user/push-config") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk mengatur notifikasi HP." });
+    const endpoint = searchParams.get("endpoint") || "";
+    const subscribed = endpoint
+      ? await pool.query("SELECT 1 FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2", [principal.id, endpoint])
+      : { rows: [] };
+    return sendJson(response, 200, {
+      configured: pushIsConfigured(),
+      publicKey: process.env.VAPID_PUBLIC_KEY || "",
+      subscribed: subscribed.rows.length > 0,
+    });
+  }
+
+  if (request.method === "POST" && pathname === "/api/user/push-subscriptions") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk mengaktifkan notifikasi HP." });
+    if (!pushIsConfigured()) return sendJson(response, 503, { message: "Notifikasi HP belum dikonfigurasi pengelola website." });
+    const body = await readJson(request);
+    const subscription = body.subscription;
+    const endpoint = typeof subscription?.endpoint === "string" ? subscription.endpoint : "";
+    if (!endpoint.startsWith("https://") || !subscription?.keys?.p256dh || !subscription?.keys?.auth) {
+      return sendJson(response, 400, { message: "Data langganan notifikasi browser tidak valid." });
+    }
+    await pool.query(
+      `INSERT INTO push_subscriptions (user_id, endpoint, subscription)
+       VALUES ($1, $2, $3::jsonb)
+       ON CONFLICT (endpoint) DO UPDATE SET user_id = EXCLUDED.user_id, subscription = EXCLUDED.subscription, updated_at = NOW()`,
+      [principal.id, endpoint, JSON.stringify(subscription)],
+    );
+    return sendJson(response, 200, { subscribed: true });
+  }
+
+  if (request.method === "DELETE" && pathname === "/api/user/push-subscriptions") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk mengatur notifikasi HP." });
+    const body = await readJson(request);
+    if (typeof body.endpoint !== "string" || !body.endpoint.startsWith("https://")) {
+      return sendJson(response, 400, { message: "Alamat langganan notifikasi tidak valid." });
+    }
+    await pool.query("DELETE FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2", [principal.id, body.endpoint]);
+    return sendJson(response, 200, { subscribed: false });
+  }
+
+  if (request.method === "GET" && pathname === "/api/user/notifications") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk melihat notifikasi." });
+    const [items, unread] = await Promise.all([
+      pool.query(
+        "SELECT id, title, description, icon, color, action, created_at, read_at FROM user_notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100",
+        [principal.id],
+      ),
+      pool.query("SELECT COUNT(*)::int AS count FROM user_notifications WHERE user_id = $1 AND read_at IS NULL", [principal.id]),
+    ]);
+    return sendJson(response, 200, {
+      items: items.rows.map((item) => ({
+        id: item.id,
+        title: item.title,
+        description: item.description,
+        icon: item.icon,
+        color: item.color,
+        action: item.action,
+        createdAt: item.created_at,
+        readAt: item.read_at,
+      })),
+      unreadCount: unread.rows[0]?.count || 0,
+    });
+  }
+
+  if (request.method === "POST" && pathname === "/api/user/notifications/read") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk memperbarui notifikasi." });
+    const readAt = new Date().toISOString();
+    await pool.query("UPDATE user_notifications SET read_at = $1 WHERE user_id = $2 AND read_at IS NULL", [readAt, principal.id]);
+    return sendJson(response, 200, { ok: true, readAt });
   }
 
   if (request.method === "GET" && pathname === "/api/user/email-preferences") {
@@ -1264,7 +1446,7 @@ const handleApi = async (request, response, url) => {
     const message = String(body.message || "").trim().slice(0, 1000);
     if (!message) return sendJson(response, 400, { message: "Tulis pertanyaan terlebih dahulu." });
     const reportResult = await pool.query("SELECT data_value FROM app_data WHERE data_key = 'reports'");
-    const availableReports = reportResult.rows[0]?.data_value || [];
+    const availableReports = (reportResult.rows[0]?.data_value || []).filter((report) => canAccessReport(report, principal));
     const reportContext = availableReports.map(({ id, title, status, category }) => ({ id, title, status, category }));
     const adminScope = isAdmin(principal);
     const assistantProfile = {
@@ -1292,21 +1474,26 @@ const handleApi = async (request, response, url) => {
     const matchedReport = idMatch && availableReports.find((report) => String(report.id).toLowerCase() === idMatch[0].toLowerCase());
     let reply;
     if (matchedReport) reply = `Laporan ${matchedReport.id} (${matchedReport.title}) berstatus ${matchedReport.status}.`;
-    else if (normalized.includes("privasi") || normalized.includes("rahasia") || normalized.includes("pribadi")) reply = "Aspirasi dengan pilihan privat hanya dapat dilihat oleh akun Anda dan petugas admin. Pilih opsi Privat saat mengirim aspirasi.";
-    else if (normalized.includes("lapor") || normalized.includes("aspirasi")) reply = "Buka menu Aspirasi, isi judul, lokasi, dan deskripsi dengan jelas. Anda dapat memilih laporan privat atau publik sebelum mengirim.";
+    else if ((normalized.includes("siapa") || normalized.includes("lihat")) && (normalized.includes("lapor") || normalized.includes("aspirasi"))) reply = "Laporan dengan kategori umum dapat dilihat warga lain di menu Lacak Laporan. Laporan dengan kategori Lainnya hanya dapat dilihat admin desa.";
+    else if (normalized.includes("privasi") || normalized.includes("rahasia") || normalized.includes("pribadi")) reply = "Laporan dengan kategori umum dapat dilihat warga lain di menu Lacak Laporan. Laporan dengan kategori Lainnya hanya dapat dilihat admin desa.";
+    else if (normalized.includes("lapor") || normalized.includes("aspirasi")) reply = "Buka menu Aspirasi, lalu isi lokasi, judul, kategori, dan deskripsi dengan jelas. Laporan kategori umum akan tampil di menu Lacak Laporan.";
     else if (normalized.includes("status") || normalized.includes("lacak")) reply = "Untuk melihat tindak lanjut, buka menu Lacak atau Riwayat. Masukkan kode laporan seperti JR-123456 agar saya dapat membantu mengecek statusnya.";
     else if (normalized.includes("berapa hari") || normalized.includes("ditindaklanjuti")) reply = "Waktu tindak lanjut bergantung pada jenis masalah dan proses pemeriksaan desa. Pantau status terbaru melalui menu Riwayat atau Lacak Laporan.";
-    else reply = "Saya dapat membantu menjelaskan cara membuat aspirasi, privasi laporan, dan cara melacak status. Sertakan kode laporan jika ingin mengecek status tertentu.";
+    else reply = "Saya dapat membantu menjelaskan cara membuat aspirasi dan melacak status laporan. Sertakan kode laporan jika ingin mengecek status tertentu.";
     return sendJson(response, 200, { reply, mode: "guide" });
   }
 
   if (request.method === "GET" && pathname === "/api/rewards") {
     if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk melihat poin reward." });
+    const includeAllActivities = searchParams.get("activities") === "all";
+    const activityQuery = includeAllActivities
+      ? "SELECT activity_type, reference_id, description, points, created_at FROM reward_activities WHERE user_id = $1 ORDER BY created_at DESC"
+      : "SELECT activity_type, reference_id, description, points, created_at FROM reward_activities WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20";
     const [userResult, rankResult, leaderboardResult, activityResult, reportResult] = await Promise.all([
       pool.query("SELECT COALESCE(poin, 0)::int AS points FROM users WHERE id = $1", [principal.id]),
       pool.query("SELECT rank::int FROM (SELECT id, ROW_NUMBER() OVER (ORDER BY COALESCE(poin, 0) DESC, created_at ASC, id ASC) AS rank FROM users WHERE role <> 'admin') ranked WHERE id = $1", [principal.id]),
       pool.query("SELECT id, COALESCE(poin, 0)::int AS points FROM users WHERE role <> 'admin' ORDER BY COALESCE(poin, 0) DESC, created_at ASC, id ASC LIMIT 10"),
-      pool.query("SELECT activity_type, reference_id, description, points, created_at FROM reward_activities WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20", [principal.id]),
+      pool.query(activityQuery, [principal.id]),
       pool.query("SELECT data_value FROM app_data WHERE data_key = 'reports'"),
     ]);
     const userReports = (reportResult.rows[0]?.data_value || []).filter((report) => String(report.ownerId) === principal.username).length;
@@ -1323,154 +1510,155 @@ const handleApi = async (request, response, url) => {
     });
   }
 
-if (request.method === "GET" && pathname === "/api/reports") {
-  const scope = searchParams.get("scope") || (isAdmin(principal) ? "all" : "public");
-
-  if (!["public", "accessible", "mine", "all"].includes(scope)) {
-    return sendJson(response, 400, {
-      message: "Pilihan daftar laporan tidak valid.",
-    });
+  if (request.method === "GET" && pathname === "/api/reports/quota") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk melihat kuota laporan." });
+    const result = await pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["reports"]);
+    const used = countReportsForDay(result.rows[0]?.data_value || [], principal);
+    return sendJson(response, 200, reportQuotaPayload(used));
   }
 
-  if (["mine", "all"].includes(scope) && !principal) {
-    return sendJson(response, 401, {
-      message: "Masuk ke akun warga untuk melihat riwayat pribadi.",
-    });
-  }
-
-  if (scope === "all" && !isAdmin(principal)) {
-    return sendJson(response, 403, {
-      message: "Akses admin diperlukan.",
-    });
-  }
-
-  const result = await pool.query(
-    "SELECT data_value FROM app_data WHERE data_key = $1",
-    ["reports"]
-  );
-
-  const stored = result.rows[0]?.data_value || [];
-
-  const votesResult = await pool.query(
-    "SELECT report_id, COUNT(*)::int AS count FROM report_votes GROUP BY report_id"
-  );
-
-  const voteCounts = new Map(
-    votesResult.rows.map((row) => [
-      String(row.report_id),
-      row.count,
-    ])
-  );
-
-  const myVotes = principal
-    ? await pool.query(
-        "SELECT report_id FROM report_votes WHERE user_id = $1",
-        [principal.id]
-      )
-    : { rows: [] };
-
-  const myVoteIds = new Set(
-    myVotes.rows.map((row) => String(row.report_id))
-  );
-
-  const reports = stored.map((report) => {
-    const votes =
-      resolveVoteBaseline(report) +
-      (voteCounts.get(String(report.id)) || 0);
-
-    const comments = Math.max(
-      Number(report.comments || 0),
-      (report.commentsList || []).length
-    );
-
-    const urgency = calculateReportPriority({
-      report,
-      votes,
-      comments,
-    });
-
-    return {
-      ...report,
-      votes,
-      comments,
-      urgency,
-      votedByMe: myVoteIds.has(String(report.id)),
-    };
-  });
-
-  return sendJson(response, 200, reports);
-}
-  if (request.method === "POST" && pathname === "/api/reports") {
-    return new Promise((resolve, reject) => {
-      upload.array("images", 5)(request, response, async (err) => {
-        if (err) {
-          console.error("Multer upload error:", err);
-          return resolve(sendJson(response, 400, { message: "Gagal mengunggah foto laporan." }));
-        }
-
-        // Dapatkan body dari request (multipart/form-data otomatis terparse oleh multer)
-        const body = request.body || {};
-
-        if (!body.judul || !body.deskripsi || !body.lokasi || !body.ownerId) {
-          return resolve(sendJson(response, 400, {
-            message: "Judul, lokasi, deskripsi, dan identitas pelapor wajib diisi.",
-          }));
-        }
-
-        // Handle uploaded image files → konversi ke base64 data URL, simpan di database
-        const imagePaths = [];
-        if (request.files && Array.isArray(request.files)) {
-          request.files.forEach((file) => {
-            const mimeType = file.mimetype || "image/jpeg";
-            const base64 = file.buffer.toString("base64");
-            imagePaths.push(`data:${mimeType};base64,${base64}`);
-          });
-        }
-
-       const aiCategory = await classifyReportWithGemini(ai, {
-  title: body.judul,
-  description: body.deskripsi,
-});
-        const now = new Date();
-        const categoryMap = {
-          Jalan: "Jalan & Fasilitas",
-          Jembatan: "Jalan & Fasilitas",
-          Drainase: "Jalan & Fasilitas",
-          Listrik: "Penerangan",
-          Air: "Lingkungan",
-          Lainya: "Lainnya",
-          Lainnya: "Lainnya",
+  if (request.method === "GET" && pathname === "/api/reports") {
+    const scope = searchParams.get("scope") || (isAdmin(principal) ? "all" : "public");
+    if (!["public", "accessible", "mine", "all"].includes(scope)) {
+      return sendJson(response, 400, { message: "Pilihan daftar laporan tidak valid." });
+    }
+    if (["mine", "all"].includes(scope) && !principal) {
+      return sendJson(response, 401, { message: "Masuk ke akun warga untuk melihat riwayat pribadi." });
+    }
+    if (scope === "all" && !isAdmin(principal)) {
+      return sendJson(response, 403, { message: "Akses admin diperlukan." });
+    }
+    const result = await pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["reports"]);
+    const stored = result.rows[0]?.data_value || [];
+    const votesResult = await pool.query("SELECT report_id, COUNT(*)::int AS count FROM report_votes GROUP BY report_id");
+    const voteCounts = new Map(votesResult.rows.map((row) => [String(row.report_id), row.count]));
+    const myVotes = principal
+      ? await pool.query("SELECT report_id FROM report_votes WHERE user_id = $1", [principal.id])
+      : { rows: [] };
+    const myVoteIds = new Set(myVotes.rows.map((row) => String(row.report_id)));
+    const reports = stored
+      .filter((report) => {
+        if (scope === "mine") return report.visibility !== "admin" && reportBelongsToUser(report, principal);
+        if (scope === "accessible") return canAccessReport(report, principal);
+        if (scope === "public") return report.visibility !== "admin" && !isReportWithdrawn(report);
+        return !isReportWithdrawn(report);
+      })
+      .map((report) => {
+        const votes = resolveVoteBaseline(report) + (voteCounts.get(String(report.id)) || 0);
+        const comments = Math.max(Number(report.comments || 0), (report.commentsList || []).length);
+        const urgency = calculateReportPriority({ report, votes, comments });
+        return {
+          ...report,
+          // Laporan lama yang dahulu privat sekarang menjadi publik, kecuali laporan khusus admin.
+          visibility: report.visibility === "admin" ? "admin" : "public",
+          votes,
+          comments,
+          urgency,
+          votedByMe: myVoteIds.has(String(report.id)),
         };
-        const report = await mutateReports((items) => {
-          const id = `JR-${String(Date.now()).slice(-6)}`;
-          const newReport = {
-            id,
-            title: String(body.judul).trim(),
-            author: String(body.ownerName || "Warga Desa").trim(),
-            ownerId: String(body.ownerId),
-            ownerName: String(body.ownerName || "Warga Desa").trim(),
-            category: categoryMap[body.kategori] || body.kategori || "Lainnya",
-            aiCategory: aiCategory || "Belum diklasifikasi",
-            status: "Masuk",
-            urgency: detectReportUrgency({ title: body.judul, description: body.deskripsi }) ? "Tinggi" : "Sedang",
-            votes: 0,
-            comments: 0,
-            image: imagePaths[0] || body.image || "",
-            images: imagePaths,
-            description: String(body.deskripsi).trim(),
-            location: String(body.lokasi).trim(),
-            rt: body.rt || "-",
-            rw: body.rw || "-",
-            time: body.waktu || now.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }),
-            reportDate: body.tanggal || now.toLocaleDateString("id-ID"),
-            aiSuggestion: "Belum ada komentar warga. Ringkasan akan dibuat setelah warga memberikan masukan.",
-            officialReply: "",
-            submittedAt: now.toISOString(),
-            commentsList: [],
-            statusHistory: [{ status: "Masuk", time: now.toISOString(), reply: "" }],
-          };
-          return { reports: [newReport, ...items], value: newReport };
-        });
+      });
+    return sendJson(response, 200, reports);
+  }
+  if (request.method === "POST" && pathname === "/api/reports") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk mengirim aspirasi." });
+    const body = await readJson(request);
+    const selectedCategory = String(body.kategori || "").trim();
+    const otherCategory = isOtherReportCategory(selectedCategory);
+    const customCategory = String(body.kategoriLainnya || "").trim();
+    if (!body.judul || !body.deskripsi || !body.lokasi) {
+      return sendJson(response, 400, {
+        message: "Judul, lokasi, deskripsi, dan identitas pelapor wajib diisi.",
+      });
+    }
+    if (!selectedCategory) return sendJson(response, 400, { message: "Kategori laporan wajib dipilih." });
+    if (otherCategory && !customCategory) return sendJson(response, 400, { message: "Tuliskan kategori laporan lainnya." });
+    if (otherCategory && customCategory.length > 80) return sendJson(response, 400, { message: "Kategori tambahan maksimal 80 karakter." });
+    const currentResult = await pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["reports"]);
+    const currentUsed = countReportsForDay(currentResult.rows[0]?.data_value || [], principal);
+    if (currentUsed >= DAILY_REPORT_LIMIT) {
+      return sendJson(response, 429, {
+        message: "Batas laporan hari ini sudah tercapai. Setiap akun warga dapat mengirim maksimal 3 laporan per hari.",
+        quota: reportQuotaPayload(currentUsed),
+      });
+    }
+
+    const allowedCategories = await loadAllowedCategories();
+    const aiCategory = await classifyReportWithGemini(ai, {
+      title: body.judul,
+      description: body.deskripsi,
+      allowedCategories,
+    });
+    const now = new Date();
+    const categoryMap = {
+      Jalan: "Jalan & Fasilitas",
+      Jembatan: "Jalan & Fasilitas",
+      Drainase: "Jalan & Fasilitas",
+      Listrik: "Penerangan",
+      Air: "Lingkungan",
+      Lainya: "Lainnya",
+      Lainnya: "Lainnya",
+    };
+
+    let exceededQuota = null;
+    const report = await mutateReports((items) => {
+      const used = countReportsForDay(items, principal, now);
+      if (used >= DAILY_REPORT_LIMIT) {
+        exceededQuota = reportQuotaPayload(used);
+        return null;
+      }
+
+      const id = `JR-${String(Date.now()).slice(-6)}`;
+      const latitude = Number(body.latitude);
+      const longitude = Number(body.longitude);
+      const hasCoordinates = body.latitude !== undefined && body.latitude !== null && body.latitude !== "" && body.longitude !== undefined && body.longitude !== null && body.longitude !== "";
+      const validCoordinates = hasCoordinates && Number.isFinite(latitude) && Number.isFinite(longitude) && latitude >= -90 && latitude <= 90 && longitude >= -180 && longitude <= 180;
+      const newReport = {
+        id,
+        title: String(body.judul).trim(),
+        author: principal.fullname || principal.nama || "Warga Desa",
+        ownerUserId: principal.id,
+        ownerId: principal.username,
+        ownerName: principal.fullname || principal.nama || "Warga Desa",
+        visibility: otherCategory ? "admin" : "public",
+        category: otherCategory ? customCategory : categoryMap[selectedCategory] || selectedCategory || "Lainnya",
+        ...(otherCategory ? { categoryGroup: "Lainnya" } : {}),
+        aiCategory: aiCategory || "Belum diklasifikasi" ,
+        status: "Masuk",
+        urgency: detectReportUrgency({ title: body.judul, description: body.deskripsi }) ? "Tinggi" : "Sedang",
+        votes: 0,
+        comments: 0,
+        image: body.image || "",
+        description: String(body.deskripsi).trim(),
+        location: String(body.lokasi).trim(),
+        infrastructureId: String(body.infrastructureId || "").trim(),
+        coordinates: validCoordinates ? { latitude, longitude } : null,
+        locationAccuracy: validCoordinates && body.locationAccuracy !== "" && Number.isFinite(Number(body.locationAccuracy))
+          ? Math.max(0, Math.round(Number(body.locationAccuracy)))
+          : null,
+        locationSource: validCoordinates && ["gps", "qr-gps"].includes(body.locationSource)
+          ? body.locationSource
+          : null,
+        rt: body.rt || "-",
+        rw: body.rw || "-",
+        time: body.waktu || now.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }),
+        reportDate: body.tanggal || now.toLocaleDateString("id-ID"),
+        aiSuggestion: "Belum ada komentar warga. Ringkasan akan dibuat setelah warga memberikan masukan.",
+        officialReply: "",
+        submittedAt: now.toISOString(),
+        commentsList: [],
+        statusHistory: [{ status: "Masuk", time: now.toISOString(), reply: "" }],
+      };
+      return { reports: [newReport, ...items], value: newReport };
+    });
+
+    if (exceededQuota) {
+      return sendJson(response, 429, {
+        message: "Batas laporan hari ini sudah tercapai. Setiap akun warga dapat mengirim maksimal 3 laporan per hari.",
+        quota: exceededQuota,
+      });
+    }
+
+    await awardPoints(principal.id, "report", report.id, `Mengirim aspirasi ${report.id}`, 50);
     await recordNotification({
       title: report.urgency === "Tinggi" ? "Laporan baru dengan urgensi tinggi" : "Laporan baru masuk",
       description: `${report.id}: ${report.title}`,
@@ -1479,9 +1667,59 @@ if (request.method === "GET" && pathname === "/api/reports") {
       action: { type: "report", id: report.id },
       eventKey: `report-created-${report.id}`,
     });
-    return sendJson(response, 201, report);
+
+    try {
+      await recordUserNotification({
+        userId: principal.id,
+        title: "Terima kasih sudah mengirim laporan",
+        description: report.visibility === "admin"
+          ? "Laporan kategori lainnya berhasil dikirim secara khusus kepada admin desa."
+          : `Laporan ${report.id} berhasil dikirim dan menunggu tindak lanjut admin.`,
+        icon: "fa-circle-check",
+        color: "bg-emerald-50 text-emerald-600",
+        action: report.visibility === "admin" ? { type: "home" } : { type: "report", id: report.id },
+        eventKey: `report-submitted-${report.id}`,
       });
-    });
+    } catch (error) {
+      console.error("Gagal menyimpan konfirmasi laporan warga:", error.message);
+    }
+    void sendPushToUser(principal.id, {
+      title: "Laporan berhasil dikirim",
+      body: "Terima kasih sudah menyampaikan laporan. Admin desa akan menindaklanjutinya.",
+      url: report.visibility === "admin" ? "/" : "/riwayat",
+      tag: `report-${report.id}`,
+    }).catch((error) => console.error("Gagal mengirim konfirmasi laporan kepada warga:", error.message));
+
+    if (report.visibility === "admin") {
+      return sendJson(response, 201, { success: true, visibility: "admin" });
+    }
+    return sendJson(response, 201, report);
+  }
+
+  if (request.method === "GET" && /^\/api\/uploads\/[^/]+$/.test(pathname)) {
+    if (!principal) return sendJson(response, 401, { message: "Masuk untuk membuka gambar pribadi." });
+    const filename = decodeURIComponent(pathname.slice("/api/uploads/".length));
+    if (basename(filename) !== filename) return sendJson(response, 404, { message: "File tidak ditemukan." });
+    const [profileOwner, reportsResult] = await Promise.all([
+      pool.query("SELECT username FROM users WHERE foto = $1", [filename]),
+      pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["reports"]),
+    ]);
+    const reportOwners = (reportsResult.rows[0]?.data_value || [])
+      .filter((report) => isReportWithdrawn(report) && report.visibility !== "admin" && report.image === `/uploads/${filename}`)
+      .map((report) => String(report.ownerId));
+    const allowed = isAdmin(principal) ||
+      profileOwner.rows.some((row) => row.username === principal.username) ||
+      reportOwners.includes(principal.username);
+    if (!allowed) return sendJson(response, 404, { message: "File tidak ditemukan." });
+    try {
+      const filePath = join(uploadDir, filename);
+      const fileStat = await stat(filePath);
+      if (!fileStat.isFile()) throw new Error("not-file");
+      response.writeHead(200, { "Content-Type": uploadMimeType(filename), "Cache-Control": "private, max-age=300" });
+      return createReadStream(filePath).pipe(response);
+    } catch {
+      return sendJson(response, 404, { message: "File tidak ditemukan." });
+    }
   }
 
   if (request.method === "POST" && pathname === "/api/uploads") {
@@ -1501,6 +1739,108 @@ if (request.method === "GET" && pathname === "/api/reports") {
     });
   }
 
+  if (request.method === "POST" && /^\/api\/reports\/[^/]+\/vote$/.test(pathname)) {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk mendukung laporan." });
+    const id = decodeURIComponent(pathname.slice("/api/reports/".length, -"/vote".length));
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query("SELECT data_value FROM app_data WHERE data_key = $1 FOR UPDATE", ["reports"]);
+      const reports = result.rows[0]?.data_value || [];
+      const current = reports.find((item) => String(item.id) === id);
+      if (!current || isReportWithdrawn(current) || !canAccessReport(current, principal)) {
+        await client.query("ROLLBACK");
+        return sendJson(response, 404, { message: "Laporan tidak ditemukan." });
+      }
+
+      const added = await client.query(
+        "INSERT INTO report_votes (report_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING report_id",
+        [id, principal.id],
+      );
+      const votedByMe = added.rowCount > 0;
+      if (!votedByMe) await client.query("DELETE FROM report_votes WHERE report_id = $1 AND user_id = $2", [id, principal.id]);
+      const count = await client.query("SELECT COUNT(*)::int AS count FROM report_votes WHERE report_id = $1", [id]);
+      const next = { ...current, votes: resolveVoteBaseline(current) + count.rows[0].count, votesManaged: true };
+      await client.query(
+        "UPDATE app_data SET data_value = $1, updated_at = NOW() WHERE data_key = $2",
+        [JSON.stringify(reports.map((report) => String(report.id) === id ? next : report)), "reports"],
+      );
+      await client.query("COMMIT");
+      if (votedByMe) await awardPoints(principal.id, "vote", id, `Mendukung laporan ${id}`, 10);
+      return sendJson(response, 200, { ...next, votedByMe });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  if (request.method === "DELETE" && /^\/api\/reports\/[^/]+$/.test(pathname)) {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk menarik laporan." });
+    const id = decodeURIComponent(pathname.slice("/api/reports/".length));
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query("SELECT data_value FROM app_data WHERE data_key = $1 FOR UPDATE", ["reports"]);
+      const reports = result.rows[0]?.data_value || [];
+      const current = reports.find((item) => String(item.id) === id);
+      if (!current) {
+        await client.query("ROLLBACK");
+        return sendJson(response, 404, { message: "Laporan tidak ditemukan." });
+      }
+      if (!reportBelongsToUser(current, principal)) {
+        await client.query("ROLLBACK");
+        return sendJson(response, 403, { message: "Anda hanya dapat menarik laporan yang Anda buat." });
+      }
+      if (current.status !== "Masuk" || isReportWithdrawn(current) || hasReportBeenProcessed(current)) {
+        await client.query("ROLLBACK");
+        return sendJson(response, 409, { message: "Laporan tidak dapat ditarik setelah mulai diproses." });
+      }
+
+      const withdrawnAt = new Date().toISOString();
+      const withdrawnReport = {
+        ...current,
+        status: "Ditarik",
+        withdrawnAt,
+        statusHistory: [
+          ...(current.statusHistory || []),
+          { status: "Ditarik", time: withdrawnAt, reply: "Laporan ditarik oleh pembuatnya." },
+        ],
+      };
+      await client.query("UPDATE app_data SET data_value = $1, updated_at = NOW() WHERE data_key = $2", [
+        JSON.stringify(reports.map((report) => String(report.id) === id ? withdrawnReport : report)),
+        "reports",
+      ]);
+
+      const pointsResult = await client.query(
+        `WITH removed_activity AS (
+           DELETE FROM reward_activities
+           WHERE user_id = $1 AND activity_type = 'report' AND reference_id = $2
+           RETURNING user_id, points
+         )
+         UPDATE users AS account
+         SET poin = GREATEST(COALESCE(account.poin, 0) - removed_activity.points, 0)
+         FROM removed_activity
+         WHERE account.id = removed_activity.user_id
+         RETURNING removed_activity.points AS points_deducted`,
+        [principal.id, id],
+      );
+      await client.query("COMMIT");
+      return sendJson(response, 200, {
+        success: true,
+        reportId: id,
+        pointsDeducted: Number(pointsResult.rows[0]?.points_deducted || 0),
+        report: withdrawnReport,
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   if (request.method === "PUT" && /^\/api\/reports\/[^/]+$/.test(pathname)) {
       if (!isAdmin(principal)) {
     return sendJson(response, 403, {
@@ -1518,7 +1858,7 @@ if (request.method === "GET" && pathname === "/api/reports") {
     let previousReport = null;
     const updated = await mutateReports((items) => {
       const current = items.find((item) => String(item.id) === id);
-      if (!current) return null;
+      if (!current || isReportWithdrawn(current)) return null;
       previousReport = current;
 
       const time = new Date().toISOString();
@@ -1538,11 +1878,39 @@ if (request.method === "GET" && pathname === "/api/reports") {
 
     if (updated && previousReport && (updated.status !== previousReport.status || updated.officialReply !== previousReport.officialReply)) {
       const recipient = await pool.query(
-        "SELECT email, fullname FROM users WHERE username = $1 AND email_verified = TRUE AND email_notifications_enabled = TRUE",
+        "SELECT id, email, fullname, email_verified, email_notifications_enabled FROM users WHERE username = $1",
         [updated.ownerId],
       );
       const user = recipient.rows[0];
-      if (user?.email) {
+      const statusChanged = updated.status !== previousReport.status;
+      const replyChanged = updated.officialReply !== previousReport.officialReply;
+      if (user?.id && updated.visibility !== "admin") {
+        const eventTime = updated.statusHistory.at(-1)?.time || new Date().toISOString();
+        try {
+          await recordUserNotification({
+            userId: user.id,
+            title: statusChanged ? "Status laporan diperbarui" : "Admin memberi tanggapan",
+            description: statusChanged
+              ? `Laporan ${updated.id} sekarang berstatus ${updated.status}.${updated.officialReply ? ` Tanggapan admin: ${updated.officialReply}` : ""}`
+              : `Ada tanggapan baru untuk laporan ${updated.id}.${updated.officialReply ? ` Tanggapan admin: ${updated.officialReply}` : ""}`,
+            icon: statusChanged ? "fa-arrows-rotate" : "fa-comment-dots",
+            color: statusChanged ? "bg-blue-50 text-blue-600" : "bg-emerald-50 text-emerald-600",
+            action: { type: "report", id: updated.id },
+            eventKey: `report-update-${updated.id}-${eventTime}`,
+          });
+        } catch (error) {
+          console.error("Gagal menyimpan notifikasi pembaruan laporan warga:", error.message);
+        }
+        void sendPushToUser(user.id, {
+          title: statusChanged ? "Progres laporan diperbarui" : "Ada tanggapan untuk laporan Anda",
+          body: statusChanged
+            ? `Laporan ${updated.id} sekarang berstatus ${updated.status}. Buka E-Aspirasi untuk melihat detail.`
+            : `Admin memberi tanggapan pada laporan ${updated.id}. Buka E-Aspirasi untuk melihat detail.`,
+          url: "/riwayat",
+          tag: `report-${updated.id}`,
+        }).catch((error) => console.error("Gagal mengirim notifikasi pembaruan laporan kepada warga:", error.message));
+      }
+      if (updated.visibility !== "admin" && user?.email && user.email_verified && user.email_notifications_enabled) {
         const title = escapeHtml(updated.title);
         const status = escapeHtml(updated.status);
         const reply = escapeHtml(updated.officialReply || "Belum ada tanggapan tambahan.");
@@ -1573,7 +1941,8 @@ if (request.method === "GET" && pathname === "/api/reports") {
 
     const updated = await mutateReports(async (items) => {
       const current = items.find((item) => String(item.id) === id);
-      if (!current) return null;
+      if (!current || isReportWithdrawn(current)) return null;
+      if (!canAccessReport(current, principal)) return null;
 
       const commentsList = [...(current.commentsList || [])];
       commentsList.push(
@@ -1630,7 +1999,7 @@ const next = {
 
       if (updated.commentsList?.length) {
         const latestComment = updated.commentsList.at(-1);
-        if (!isAdmin(principal)) await awardPoints(principal.id, "report_comment", latestComment.id, `Komentar pada laporan ${updated.id}`, 50);
+        if (!isAdmin(principal)) await awardPoints(principal.id, "report_comment", latestComment.id, `Komentar pada laporan ${updated.id}`, 10);
         await recordNotification({
           title: "Komentar baru pada laporan",
           description: `${latestComment.name} mengomentari ${updated.id}: ${updated.title}`,
@@ -1876,7 +2245,7 @@ const next = {
       } catch (err) {}
 
       if (role === "user") {
-        await awardPoints(principal.id, "news_comment", comment.id, `Komentar pada berita ${updated.title}`, 50);
+        await awardPoints(principal.id, "news_comment", comment.id, `Komentar pada berita ${updated.title}`, 10);
         await recordNotification({
           title: "Komentar baru pada berita desa",
           description: `${comment.name} mengomentari "${updated.title}".`,
@@ -2062,6 +2431,15 @@ const serveStatic = async (response, pathname) => {
       return response.end("File tidak ditemukan.");
     }
     try {
+      const [profileOwner, reportsResult] = await Promise.all([
+        pool.query("SELECT id FROM users WHERE foto = $1", [filename]),
+        pool.query("SELECT data_value FROM app_data WHERE data_key = $1", ["reports"]),
+      ]);
+      const restrictedReportImage = (reportsResult.rows[0]?.data_value || []).some(
+        (report) => (report.visibility === "admin" || isReportWithdrawn(report)) && report.image === `/uploads/${filename}`,
+      );
+      if (profileOwner.rows.length || restrictedReportImage) throw new Error("private-file");
+
       const filePath = join(uploadDir, filename);
       const fileStat = await stat(filePath);
       if (!fileStat.isFile()) throw new Error("not-file");
@@ -2086,6 +2464,7 @@ const serveStatic = async (response, pathname) => {
         ".html": "text/html",
         ".js": "text/javascript",
         ".css": "text/css",
+        ".webmanifest": "application/manifest+json",
         ".svg": "image/svg+xml",
         ".png": "image/png",
         ".jpg": "image/jpeg",

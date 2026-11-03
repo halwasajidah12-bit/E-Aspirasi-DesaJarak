@@ -1,7 +1,14 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { ArrowLeft, History, FileText, GraduationCap, Camera, Save, X } from "lucide-react";
-import { getUserProfile, updateUserProfile } from "../../utils/api";
+import { getUserProfile, privateUploadUrl, updateUserProfile } from "../../utils/api.js";
+import ProtectedImage from "../components/ProtectedImage.jsx";
+
+const userPhotoUrl = (photo) => {
+  if (!photo) return "https://i.pravatar.cc/200?img=12";
+  if (photo.startsWith("http")) return photo;
+  return privateUploadUrl(photo.replace(/^\/uploads\//, ""));
+};
 
 const shortcuts = [
   { to: "/riwayat", icon: History, label: "Riwayat Anda", bg: "bg-amber-50 text-amber-600 border border-amber-100" },
@@ -39,7 +46,7 @@ export default function Akun({ session }) {
             nik: data.nik || "Belum diisi",
             no_telepon: data.no_telepon || "-",
             alamat: data.alamat || "-",
-            foto: data.foto ? `/uploads/${data.foto}` : "https://i.pravatar.cc/200?img=12",
+            foto: userPhotoUrl(data.foto),
           };
           setProfile(loadedProfile);
           setEditData(loadedProfile);
@@ -47,6 +54,9 @@ export default function Akun({ session }) {
         .catch(err => console.error("Gagal memuat profil:", err))
         .finally(() => setIsLoading(false));
     } else {
+      const guestProfile = { ...profile, fullname: session?.name || "Tamu" };
+      setProfile(guestProfile);
+      setEditData(guestProfile);
       setIsLoading(false);
     }
   }, [session]);
@@ -79,7 +89,7 @@ export default function Akun({ session }) {
       }
 
       const updated = await updateUserProfile(session.userId, formData);
-      const newFotoUrl = updated.foto ? `/uploads/${updated.foto}` : previewUrl || editData.foto;
+      const newFotoUrl = updated.foto ? userPhotoUrl(updated.foto) : previewUrl || editData.foto;
       
       setProfile({
         fullname: updated.fullname,
@@ -133,7 +143,7 @@ export default function Akun({ session }) {
         </button>
         
         <div className="relative inline-block mt-2">
-          <img
+          <ProtectedImage
             src={previewUrl || profile.foto}
             alt="Foto Profil"
             className="h-20 w-20 rounded-full bg-gray-300 mx-auto border-4 border-white/80 shadow-md object-cover"
@@ -160,14 +170,14 @@ export default function Akun({ session }) {
           {session?.role === 'guest' ? 'Tamu' : 'Warga Dusun Jarak Lor'}
         </p>
 
-        {!isEditing ? (
+        {!isEditing && session?.role !== 'guest' ? (
           <button 
             onClick={() => setIsEditing(true)}
             className="mt-3 bg-emerald-500 hover:bg-emerald-400 text-emerald-950 text-xs font-bold rounded-xl px-6 py-2 transition active:scale-95"
           >
             Edit Profil
           </button>
-        ) : (
+        ) : isEditing ? (
           <div className="flex justify-center gap-2 mt-3">
             <button 
               onClick={cancelEdit}
@@ -183,7 +193,7 @@ export default function Akun({ session }) {
               <Save size={14} /> {isSaving ? "Menyimpan..." : "Simpan"}
             </button>
           </div>
-        )}
+        ) : <p className="mt-3 text-xs text-emerald-100">Masuk ke akun warga untuk mengubah profil.</p>}
       </div>
 
       <div className="bg-white rounded-2xl border border-emerald-100 shadow-sm p-4">

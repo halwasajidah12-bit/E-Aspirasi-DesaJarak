@@ -8,7 +8,14 @@ import { toggleReportVote } from "../../utils/api.js";
 export default function ReportCard({ report, session, onReportUpdate }) {
   const [voting, setVoting] = useState(false);
   const [voteError, setVoteError] = useState("");
+  const [didukung, setDidukung] = useState(Boolean(report.votedByMe));
+  const [dukungan, setDukungan] = useState(Number(report.dukungan) || 0);
   const canVote = session?.role === "user";
+
+  useEffect(() => {
+    setDidukung(Boolean(report.votedByMe));
+    setDukungan(Number(report.dukungan) || 0);
+  }, [report.votedByMe, report.dukungan]);
 
   const toggleDukungan = async (event) => {
     event.preventDefault();
@@ -22,6 +29,8 @@ export default function ReportCard({ report, session, onReportUpdate }) {
     setVoting(true);
     try {
       const updated = await toggleReportVote(report.id);
+      setDidukung(Boolean(updated.votedByMe ?? !didukung));
+      setDukungan(Number(updated.votes ?? dukungan));
       onReportUpdate?.(updated);
     } catch (error) {
       setVoteError(error.message || "Dukungan gagal disimpan.");
@@ -30,10 +39,10 @@ export default function ReportCard({ report, session, onReportUpdate }) {
     }
   };
 
+  const jumlahKomentar = Number(
+    report.comments ?? report.commentsList?.length ?? 0
+  );
 
-const jumlahKomentar = Number(
-  report.comments ?? report.commentsList?.length ?? 0
-);
   return (
     <div className="bg-white p-3.5 rounded-2xl border border-emerald-100 shadow-sm space-y-2.5">
       <div className="flex justify-between items-start gap-2">
@@ -82,17 +91,17 @@ const jumlahKomentar = Number(
       </div>
 
       <div className="flex items-center justify-between pt-2 border-t border-gray-100">
-        <span className="text-xs text-gray-500">{Number(report.dukungan) || 0} Dukungan Warga</span>
+        <span className="text-xs text-gray-500">{dukungan} Dukungan Warga</span>
         <div className="flex items-center gap-2">
           <button
             onClick={toggleDukungan}
             disabled={voting}
-            aria-pressed={Boolean(report.votedByMe)}
-            aria-label={report.votedByMe ? "Batalkan dukungan" : "Dukung laporan"}
-            title={canVote ? (report.votedByMe ? "Batalkan dukungan" : "Dukung laporan") : "Masuk sebagai warga untuk mendukung laporan"}
-            className={`transition active:scale-90 disabled:opacity-50 ${report.votedByMe ? "text-emerald-600" : "text-gray-400 hover:text-emerald-600"}`}
+            aria-pressed={didukung}
+            aria-label={didukung ? "Batalkan dukungan" : "Dukung laporan"}
+            title={canVote ? (didukung ? "Batalkan dukungan" : "Dukung laporan") : "Masuk sebagai warga untuk mendukung laporan"}
+            className={`transition active:scale-90 disabled:opacity-50 ${didukung ? "text-emerald-600" : "text-gray-400 hover:text-emerald-600"}`}
           >
-            <ThumbsUp size={16} fill={report.votedByMe ? "currentColor" : "none"} />
+            <ThumbsUp size={16} fill={didukung ? "currentColor" : "none"} />
           </button>
 
           <Link

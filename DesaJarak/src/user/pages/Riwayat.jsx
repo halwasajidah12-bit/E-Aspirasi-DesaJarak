@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
+import ProtectedImage from "../components/ProtectedImage.jsx";
 import { getReports } from "../../utils/api.js";
 import { mapApiReport } from "../data/laporan";
 
-const tabs = ["Semua", "Masuk", "Diproses", "Selesai", "Ditolak"];
+const tabs = ["Semua", "Masuk", "Diproses", "Selesai", "Ditolak", "Ditarik"];
 
 export default function Riwayat({ session }) {
   const [tab, setTab] = useState("Semua");
@@ -13,9 +14,9 @@ export default function Riwayat({ session }) {
   useEffect(() => {
     let mounted = true;
     const refreshReports = () => {
-      getReports()
+      getReports('mine')
         .then((items) => {
-          if (mounted) setReports(items.map(mapApiReport).filter((item) => item.ownerId === session?.userId));
+          if (mounted) setReports(items.map(mapApiReport));
         })
         .catch(() => {});
     };
@@ -34,6 +35,7 @@ export default function Riwayat({ session }) {
       <PageHeader title="Riwayat" subtitle="Pantau riwayat Anda" />
 
       <div className="px-4 sm:px-6 mt-3.5">
+        {session?.role === "guest" && <p className="mb-3 rounded-xl bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">Masuk ke akun warga untuk melihat laporan yang Anda kirim.</p>}
         <div className="flex gap-2 overflow-x-auto no-scrollbar mb-4">
           {tabs.map((t) => (
             <button
@@ -60,6 +62,7 @@ export default function Riwayat({ session }) {
                 <span className={`shrink-0 rounded-full px-2 py-0.5 text-[9px] font-bold ${
                   report.status === "Selesai" ? "bg-emerald-100 text-emerald-800" :
                   report.status === "Ditolak" ? "bg-gray-200 text-gray-700" :
+                  report.status === "Ditarik" ? "bg-gray-100 text-gray-600" :
                   report.status === "Diproses" ? "bg-amber-100 text-amber-800" : "bg-blue-100 text-blue-800"
                 }`}>{report.status}</span>
               </div>
@@ -72,6 +75,16 @@ export default function Riwayat({ session }) {
                   </div>
                 ))}
               </div>
+              {report.foto && (
+                <div className="mt-3 overflow-hidden rounded-xl bg-gray-100">
+                  <ProtectedImage
+                    src={report.foto}
+                    privateAccess={report.status === "Ditarik"}
+                    alt={`Foto laporan ${report.judul}`}
+                    className="max-h-64 w-full object-contain"
+                  />
+                </div>
+              )}
               <Link to={`/lacak/${String(report.id).replace("#", "")}`} className="mt-3 inline-block text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1 rounded-lg">
                 Buka laporan
               </Link>

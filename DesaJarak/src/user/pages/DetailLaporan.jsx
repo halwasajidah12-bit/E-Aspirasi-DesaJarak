@@ -9,15 +9,18 @@ import {
   CheckCircle2,
   Image as ImageIcon,
   MessageCircle,
+  Undo2,
 } from "lucide-react";
 import { mapApiReport } from "../data/laporan";
-import { addReportComment, getReports, toggleReportVote,} from "../../utils/api.js";
+import { addReportComment, getReports, toggleReportVote, withdrawReport } from "../../utils/api.js";
+import ProtectedImage from "../components/ProtectedImage.jsx";
 
 const statusStyle = {
   Selesai: "bg-emerald-100 text-emerald-800",
   Diproses: "bg-amber-100 text-amber-800",
   Masuk: "bg-blue-100 text-blue-800",
   Ditolak: "bg-gray-200 text-gray-700",
+  Ditarik: "bg-gray-100 text-gray-600",
 };
 
 export default function DetailLaporan({ session }) {
@@ -28,13 +31,15 @@ export default function DetailLaporan({ session }) {
   const [commentText, setCommentText] = useState("");
   const [commentError, setCommentError] = useState("");
   const [sendingComment, setSendingComment] = useState(false);
-  const [voting, setVoting] = useState(false);
   const [voteError, setVoteError] = useState("");
+  const [sendingVote, setSendingVote] = useState(false);
+  const [withdrawError, setWithdrawError] = useState("");
+  const [withdrawing, setWithdrawing] = useState(false);
 
   useEffect(() => {
     let mounted = true;
     const refreshReport = () => {
-      getReports()
+      getReports("accessible")
         .then((items) => {
           const item = items.find((entry) => String(entry.id).replace("#", "") === String(id).replace("#", ""));
           if (mounted) {
@@ -54,45 +59,24 @@ export default function DetailLaporan({ session }) {
     };
   }, [id]);
 
-  const ownerId = session?.userId || "";
-  const didukung = (report?.voterIds || []).includes(ownerId);
-  const dukungan = Math.max(
-  Number(report?.dukungan || 0),
-  Number(report?.votes || 0),
-  (report?.voterIds || []).length
-);
+  const didukung = Boolean(report?.votedByMe);
+  const dukungan = Number(report?.dukungan) || 0;
+  const reportWithdrawn = report?.status === "Ditarik" || Boolean(report?.withdrawnAt);
+  const hasBeenProcessed = (report?.statusHistory || []).some((entry) => entry.status !== "Masuk");
+  const canWithdraw = session?.role === "user" && report?.status === "Masuk" && !hasBeenProcessed && String(report?.ownerUserId || report?.ownerId || "") === String(session?.userId || "");
 
-const [loadingVote, setLoadingVote] = useState(false);
-
-const toggleDukungan = async () => {
-  if (!ownerId) {
-    alert("Silakan login terlebih dahulu untuk mendukung laporan.");
-    return;
-  }
-
-  if (loadingVote) return;
-
-  setLoadingVote(true);
-
-  try {
-    const result = await toggleReportVote(report.id, ownerId);
-
-    // Perbarui data laporan berdasarkan respons backend
-    setReport((current) => ({
-      ...current,
-      dukungan: Number(result.votes || 0),
-      voterIds: result.voterIds || (
-        result.supported
-          ? [...(current.voterIds || []), ownerId]
-          : (current.voterIds || []).filter((id) => id !== ownerId)
-      ),
-    }));
-  } catch (error) {
-    alert(error.message || "Gagal menyimpan dukungan.");
-  } finally {
-    setLoadingVote(false);
-  }
-};
+  const toggleDukungan = async () => {
+    setSendingVote(true);
+    setVoteError("");
+    try {
+      const updated = await toggleReportVote(report.id);
+      setReport(mapApiReport(updated));
+    } catch (error) {
+      setVoteError(error.message || "Dukungan gagal disimpan.");
+    } finally {
+      setSendingVote(false);
+    }
+  };
 
   const bagikan = async () => {
     const url = window.location.href;
@@ -129,6 +113,26 @@ const toggleDukungan = async () => {
       setCommentError(error.message || "Komentar gagal dikirim.");
     } finally {
       setSendingComment(false);
+    }
+  };
+
+  const tarikAspirasi = async () => {
+    if (!canWithdraw || withdrawing) return;
+    const confirmed = window.confirm(
+      "Tarik aspirasi ini? Poin hadiah pengaduan akan dikurangi dan kuota laporan hari ini tetap terpakai. Aspirasi hanya dapat ditarik selama statusnya Masuk.",
+    );
+    if (!confirmed) return;
+
+    setWithdrawing(true);
+    setWithdrawError("");
+    try {
+      const result = await withdrawReport(report.id);
+      window.alert(`Aspirasi berhasil ditarik. ${Number(result.pointsDeducted || 0).toLocaleString("id-ID")} poin dikurangi.`);
+      navigate("/riwayat");
+    } catch (error) {
+      setWithdrawError(error.message || "Aspirasi gagal ditarik.");
+    } finally {
+      setWithdrawing(false);
     }
   };
 
@@ -196,6 +200,11 @@ const toggleDukungan = async () => {
       </div>
 
       <div className="bg-white rounded-2xl border border-emerald-100 shadow-sm p-4">
+        {reportWithdrawn && (
+          <p className="mb-4 rounded-xl border border-gray-200 bg-gray-50 p-3 text-xs text-gray-700">
+            Aspirasi ini sudah ditarik. Aspirasi tidak dapat diproses, diberi vote, atau dikomentari.
+          </p>
+        )}
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs font-mono font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
             #{String(report.id).replace("#", "")}
@@ -227,8 +236,9 @@ const toggleDukungan = async () => {
 
         <div className="mt-4 rounded-2xl overflow-hidden bg-gray-100 h-44 flex items-center justify-center">
           {report.foto ? (
-            <img
+            <ProtectedImage
               src={report.foto}
+              privateAccess={report.visibility !== "public"}
               alt={report.judul}
               className="w-full h-full object-cover"
             />
@@ -250,12 +260,22 @@ const toggleDukungan = async () => {
           <Info label="Tanggal" value={report.tanggal ?? "-"} />
           <Info label="Kategori" value={report.kategori ?? "-"} />
           <Info label="Lokasi" value={report.lokasi ?? "-"} className="col-span-2" />
+          {Number.isFinite(report.coordinates?.latitude) && Number.isFinite(report.coordinates?.longitude) && (
+            <a
+              href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${report.coordinates.latitude},${report.coordinates.longitude}`)}`}
+              target="_blank"
+              rel="noreferrer"
+              className="col-span-2 text-emerald-700 font-semibold underline"
+            >
+              Buka titik GPS di peta{report.locationAccuracy != null ? ` · akurasi ±${report.locationAccuracy} m` : ""}
+            </a>
+          )}
         </div>
 
         <div className="mt-5 rounded-xl border border-emerald-100 bg-emerald-50/60 p-3.5 flex items-center gap-3">
           <div className="flex-1">
             <p className="text-xs font-bold text-emerald-800">
-              {Number(report.dukungan) || 0} Dukungan Warga
+              {dukungan} Dukungan Warga
             </p>
             <p className="text-[10px] text-gray-500 mt-0.5">
               Beri dukungan agar laporan ini diprioritaskan.
@@ -263,15 +283,15 @@ const toggleDukungan = async () => {
           </div>
           <button
             onClick={toggleDukungan}
-            disabled={voting}
-            aria-pressed={Boolean(report.votedByMe)}
-            className={`flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold transition active:scale-95 disabled:opacity-60 ${
-              report.votedByMe
+            disabled={sendingVote || session?.role === "guest" || reportWithdrawn}
+            aria-pressed={didukung}
+            className={`flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold transition active:scale-95 disabled:opacity-50 ${
+              didukung
                 ? "bg-emerald-600 text-white shadow-sm"
                 : "bg-white text-emerald-700 border border-emerald-200 hover:bg-emerald-50"
             }`}
           >
-            <ThumbsUp size={15} /> {voting ? "Menyimpan..." : report.votedByMe ? "Didukung" : "Dukung"}
+            <ThumbsUp size={15} /> {sendingVote ? "Menyimpan..." : didukung ? "Didukung" : "Dukung"}
           </button>
         </div>
         {voteError && (
@@ -279,6 +299,8 @@ const toggleDukungan = async () => {
             {voteError}
           </p>
         )}
+        {session?.role === "guest" && <p className="mt-2 text-xs text-gray-500">Masuk ke akun warga untuk mendukung laporan.</p>}
+        {reportWithdrawn && <p className="mt-2 text-xs text-gray-500">Vote dinonaktifkan karena aspirasi sudah ditarik.</p>}
 
         <div className="mt-6">
           <p className="text-sm font-bold text-emerald-900 mb-4">
@@ -328,14 +350,17 @@ const toggleDukungan = async () => {
             {!report.komentar.length && <p className="py-3 text-center text-sm text-gray-400">Belum ada komentar.</p>}
           </div>
           {commentError && <p className="mt-2 text-xs text-rose-600">{commentError}</p>}
+          {session?.role === "guest" && <p className="mt-3 text-xs text-gray-500">Masuk ke akun warga untuk mengirim komentar.</p>}
+          {reportWithdrawn && <p className="mt-3 text-xs text-gray-500">Komentar dinonaktifkan karena aspirasi sudah ditarik.</p>}
           <form onSubmit={kirimKomentar} className="mt-3 flex gap-2">
             <input
               value={commentText}
               onChange={(event) => setCommentText(event.target.value)}
               placeholder="Tulis komentar atau masukan warga..."
+              disabled={session?.role === "guest" || reportWithdrawn}
               className="input min-w-0 flex-1"
             />
-            <button disabled={sendingComment || !commentText.trim()} className="shrink-0 rounded-xl bg-emerald-600 hover:bg-emerald-500 px-4 text-xs font-bold text-white shadow-sm transition active:scale-95 disabled:opacity-50">
+            <button disabled={sendingComment || !commentText.trim() || session?.role === "guest" || reportWithdrawn} className="shrink-0 rounded-xl bg-emerald-600 hover:bg-emerald-500 px-4 text-xs font-bold text-white shadow-sm transition active:scale-95 disabled:opacity-50">
               {sendingComment ? "Mengirim..." : "Kirim"}
             </button>
           </form>
@@ -355,6 +380,22 @@ const toggleDukungan = async () => {
             Lacak Laporan Lain
           </button>
         </div>
+        {withdrawError && <p role="alert" className="mt-4 text-xs text-rose-600">{withdrawError}</p>}
+        {canWithdraw && (
+          <div className="mt-4">
+            <button
+              type="button"
+              onClick={tarikAspirasi}
+              disabled={withdrawing}
+              className="w-full rounded-xl border border-rose-200 bg-rose-50 py-3 text-xs font-bold text-rose-700 transition hover:bg-rose-100 active:scale-[.99] disabled:opacity-60"
+            >
+              <span className="inline-flex items-center justify-center gap-2">
+                <Undo2 size={15} /> {withdrawing ? "Menarik Aspirasi..." : "Tarik Aspirasi"}
+              </span>
+            </button>
+            <p className="mt-1.5 text-center text-[10px] text-gray-500">Tombol ini hanya tersedia selama status laporan Masuk.</p>
+          </div>
+        )}
       </div>
     </div>
   );

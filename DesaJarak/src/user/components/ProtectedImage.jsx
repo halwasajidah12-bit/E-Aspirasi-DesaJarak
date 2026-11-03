@@ -1,20 +1,47 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
+import { getStoredAuthSession, privateUploadUrl } from "../../utils/api.js";
 
-export default function ProtectedImage({ src, alt = "", className = "", ...props }) {
-  const [imageSrc, setImageSrc] = useState(src);
-  const [error, setError] = useState(false);
+export default function ProtectedImage({ src, privateAccess = false, alt = "", className = "" }) {
+  const [displaySrc, setDisplaySrc] = useState("");
 
   useEffect(() => {
-    setImageSrc(src);
-    setError(false);
-  }, [src]);
+    let active = true;
+    let objectUrl = "";
+    if (!src) {
+      setDisplaySrc("");
+      return undefined;
+    }
 
-  if (error || !imageSrc)
-    return (
-      <div className={`${className} bg-gray-100 rounded-xl flex items-center justify-center`}>
-        <i className="fa-solid fa-image text-gray-300 text-2xl"></i>
-      </div>
-    );
+    const isPrivateApiUrl = src.startsWith("/api/uploads/");
+    const privateUrl = privateAccess && src.startsWith("/uploads/")
+      ? privateUploadUrl(src.slice("/uploads/".length))
+      : src;
+    if (!isPrivateApiUrl && privateUrl === src) {
+      setDisplaySrc(src);
+      return undefined;
+    }
 
-  return <img src={imageSrc} alt={alt} className={className} onError={() => setError(true)} {...props} />;
+    setDisplaySrc("");
+    const token = getStoredAuthSession()?.token;
+    fetch(privateUrl, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      .then((response) => {
+        if (!response.ok) throw new Error("Gambar tidak tersedia.");
+        return response.blob();
+      })
+      .then((blob) => {
+        if (!active) return;
+        objectUrl = URL.createObjectURL(blob);
+        setDisplaySrc(objectUrl);
+      })
+      .catch(() => {
+        if (active) setDisplaySrc("");
+      });
+
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [src, privateAccess]);
+
+  return <img src={displaySrc || undefined} alt={alt} className={className} />;
 }

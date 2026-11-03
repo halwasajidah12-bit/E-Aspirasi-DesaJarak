@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, ScanLine, Camera } from "lucide-react";
-import { createReport, getCategories, uploadImage, checkDuplicates } from "../../utils/api.js";
+import { checkDuplicates, createReport, getCategories, getReportQuota, uploadImage } from "../../utils/api.js";
 
 const MAX_PHOTO_SIZE = 5 * 1024 * 1024;
 const PHOTO_TYPES = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"]);
@@ -44,6 +44,15 @@ const preparePhoto = async (file) => {
   return new File([blob], `${file.name.replace(/\.[^.]+$/, "") || "foto"}.jpg`, { type: "image/jpeg" });
 };
 
+function getCurrentReportDateTime() {
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, "0");
+  return {
+    tanggal: `${pad(now.getDate())}-${pad(now.getMonth() + 1)}-${now.getFullYear()}`,
+    waktu: `${pad(now.getHours())}.${pad(now.getMinutes())}`,
+  };
+}
+
 const Stepper = ({ current }) => (
   <div className="flex items-center justify-center gap-2 mb-5">
     {["Lokasi", "Detail", "Foto"].map((label, idx) => (
@@ -64,27 +73,31 @@ const Stepper = ({ current }) => (
 
 function Aspirasi({ session }) {
   const [step, setStep] = useState(0);
-  const [form, setForm] = useState({
+  const [dbCategories, setDbCategories] = useState([]);
+  const [form, setForm] = useState(() => ({
+    ...getCurrentReportDateTime(),
     lokasi: "",
     rt: "",
     rw: "",
-    waktu: "",
-    tanggal: "",
-    judul: "",
-    kategori: "",
-    deskripsi: "",
     infrastructureId: "",
     latitude: "",
     longitude: "",
     locationAccuracy: "",
     locationSource: "",
-  });
-  const [dbCategories, setDbCategories] = useState([]);
+    judul: "",
+    kategori: "",
+    kategoriLainnya: "",
+    deskripsi: "",
+  }));
+  const navigate = useNavigate();
+  const [submitting, setSubmitting] = useState(false);
+  const [reportQuota, setReportQuota] = useState(null);
+  const [quotaLoading, setQuotaLoading] = useState(true);
+  const [quotaModalOpen, setQuotaModalOpen] = useState(false);
   const [photo, setPhoto] = useState(null);
   const [photoPreview, setPhotoPreview] = useState("");
   const [photoBusy, setPhotoBusy] = useState(false);
   const [submitError, setSubmitError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
   const [duplicateWarning, setDuplicateWarning] = useState(null);
   const [scanActive, setScanActive] = useState(false);
   const [scanError, setScanError] = useState("");
@@ -92,7 +105,26 @@ function Aspirasi({ session }) {
   const [gpsBusy, setGpsBusy] = useState(false);
   const videoRef = useRef(null);
   const photoInputRef = useRef(null);
-  const navigate = useNavigate();
+  const scannerControlsRef = useRef(null);
+  const cameraStreamRef = useRef(null);
+  const scannerAttemptRef = useRef(0);
+
+  const stopScanner = useCallback(() => {
+    scannerAttemptRef.current += 1;
+    try {
+      const stopResult = scannerControlsRef.current?.stop();
+      stopResult?.catch?.(() => {});
+    } catch {
+      // Track kamera tetap dihentikan di bawah jika controls gagal ditutup.
+    }
+    scannerControlsRef.current = null;
+    cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
+    cameraStreamRef.current = null;
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.srcObject = null;
+    }
+  }, []);
 
   const captureGpsLocation = useCallback((source) => {
     setScanError("");
@@ -131,6 +163,7 @@ function Aspirasi({ session }) {
           longitude,
           locationAccuracy,
           locationSource: source === "qr" ? "qr-gps" : "gps",
+          ...getCurrentReportDateTime(),
         }));
         setScanMessage(`Lokasi GPS berhasil diambil${locationAccuracy !== "" ? ` (akurasi sekitar ${locationAccuracy} m)` : ""}.`);
         setScanError("");
@@ -152,65 +185,84 @@ function Aspirasi({ session }) {
     );
   }, []);
 
-  useEffect(() => {
-    if (!scanActive) return undefined;
-    let cancelled = false;
-    let controls;
-    let decoded = false;
-    const startScanner = async () => {
-      if (!window.isSecureContext) {
-        setScanError("Kamera hanya dapat digunakan melalui HTTPS atau localhost.");
-        setScanActive(false);
-        return;
-      }
-      if (!navigator.mediaDevices?.getUserMedia) {
-        setScanError("Kamera tidak tersedia di browser ini. Isi lokasi secara manual.");
-        setScanActive(false);
-        return;
-      }
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-        if (cancelled) {
-          stream.getTracks().forEach((track) => track.stop());
-          return;
-        }
-        videoRef.current.srcObject = stream;
-        const codeReader = new window.ZXing.BrowserQRCodeReader();
-        controls = await codeReader.decodeFromVideoDevice(null, videoRef.current, (result, err) => {
-          if (result && !decoded) {
-            decoded = true;
-            controls.stop();
-            stream.getTracks().forEach((track) => track.stop());
-            if (videoRef.current) videoRef.current.srcObject = null;
-            captureGpsLocation("qr");
-            setScanActive(false);
-          }
-          if (err && err.name !== "NotFoundException") {
-            setScanError("Gagal memindai QR. Coba lagi.");
-            setScanActive(false);
-            stream.getTracks().forEach((track) => track.stop());
-          }
-        });
-      } catch (error) {
-        const message = error.name === "NotAllowedError"
-          ? "Izin kamera ditolak. Izinkan akses kamera di browser, lalu coba lagi."
-          : error.name === "NotFoundError"
-            ? "Kamera tidak ditemukan di perangkat ini."
-            : "Kamera gagal dibuka. Periksa izin kamera atau isi lokasi secara manual.";
-        setScanError(message);
-        setScanActive(false);
-      }
-    };
+  const startScanner = useCallback(async () => {
+    setScanError("");
+    setScanMessage("");
 
-    startScanner();
-    return () => {
-      cancelled = true;
-      controls?.stop();
-      const stream = videoRef.current?.srcObject;
-      stream?.getTracks().forEach((track) => track.stop());
-      if (videoRef.current) videoRef.current.srcObject = null;
-    };
-  }, [scanActive, captureGpsLocation]);
+    if (!window.isSecureContext) {
+      setScanError("Kamera hanya dapat digunakan melalui HTTPS atau localhost. Buka web dengan alamat HTTPS di ponsel.");
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setScanError("Kamera tidak tersedia di browser ini. Isi lokasi laporan secara manual.");
+      return;
+    }
+
+    const attemptId = ++scannerAttemptRef.current;
+    setScanActive(true);
+    setScanMessage("Meminta izin kamera. Pilih Izinkan jika browser menanyakannya...");
+
+    try {
+      // Minta kamera langsung dari event klik agar browser mengaitkan izin kamera
+      // dengan tindakan pengguna, terutama pada browser ponsel.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" } },
+        audio: false,
+      });
+      if (attemptId !== scannerAttemptRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+
+      cameraStreamRef.current = stream;
+      if (!videoRef.current) throw new Error("Preview kamera belum siap.");
+
+      const { BrowserQRCodeReader } = await import("@zxing/browser");
+      if (attemptId !== scannerAttemptRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      let decoded = false;
+      const reader = new BrowserQRCodeReader();
+      const controls = await reader.decodeFromStream(stream, videoRef.current, (result) => {
+        if (!result || decoded || attemptId !== scannerAttemptRef.current) return;
+        decoded = true;
+        stopScanner();
+        setScanActive(false);
+        setScanMessage("");
+        captureGpsLocation("qr");
+      });
+
+      if (attemptId !== scannerAttemptRef.current || decoded) {
+        controls.stop();
+        return;
+      }
+      scannerControlsRef.current = controls;
+      setScanMessage("Kamera aktif. Arahkan kamera ke QR code.");
+    } catch (error) {
+      if (attemptId !== scannerAttemptRef.current) return;
+      stopScanner();
+      const message = error.name === "NotAllowedError" || error.name === "PermissionDeniedError"
+        ? "Izin kamera ditolak. Izinkan akses kamera di pengaturan browser, lalu coba lagi."
+        : error.name === "NotFoundError" || error.name === "DevicesNotFoundError"
+          ? "Kamera tidak ditemukan di perangkat ini."
+          : error.name === "NotReadableError" || error.name === "TrackStartError"
+            ? "Kamera sedang dipakai aplikasi lain. Tutup aplikasi kamera lain lalu coba lagi."
+            : "Kamera gagal dibuka. Pastikan web memakai HTTPS, izin kamera aktif, lalu coba lagi.";
+      setScanError(message);
+      setScanMessage("");
+      setScanActive(false);
+    }
+  }, [captureGpsLocation, stopScanner]);
+
+  useEffect(() => {
+    return () => stopScanner();
+  }, [stopScanner]);
+
+  useEffect(() => {
+    if (!photoPreview) return undefined;
+    return () => URL.revokeObjectURL(photoPreview);
+  }, [photoPreview]);
 
   // Tarik data kategori dinamis dari database saat form dibuka
   useEffect(() => {
@@ -218,20 +270,45 @@ function Aspirasi({ session }) {
     getCategories()
       .then((items) => {
         if (mounted) {
-          setDbCategories(items.map((item) => item.nama_kategori));
+          const names = items.map((item) => item.nama_kategori);
+          if (!names.some((name) => ["lainya", "lainnya"].includes(String(name).trim().toLowerCase()))) {
+            names.push("Lainnya");
+          }
+          setDbCategories(names);
         }
       })
       .catch(() => {
         if (mounted) {
-          setDbCategories(["Jalan", "Jembatan", "Listrik", "Air", "Drainase", "Lainya"]);
+          // Fallback jika API gagal
+          setDbCategories(["Jalan", "Jembatan", "Listrik", "Air", "Drainase", "Lainnya"]);
         }
       });
     return () => (mounted = false);
   }, []);
 
-  useEffect(() => () => {
-    if (photoPreview) URL.revokeObjectURL(photoPreview);
-  }, [photoPreview]);
+  useEffect(() => {
+    if (!session?.userId || session.role === "guest") {
+      setReportQuota(null);
+      setQuotaLoading(false);
+      return undefined;
+    }
+    let mounted = true;
+    setQuotaLoading(true);
+    getReportQuota()
+      .then((quota) => {
+        if (mounted) {
+          setReportQuota(quota);
+          if (quota.remaining === 0) setQuotaModalOpen(true);
+        }
+      })
+      .catch(() => {
+        if (mounted) setReportQuota(null);
+      })
+      .finally(() => {
+        if (mounted) setQuotaLoading(false);
+      });
+    return () => { mounted = false; };
+  }, [session?.userId, session?.role]);
 
   const update = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
   const [formErrors, setFormErrors] = useState({});
@@ -256,15 +333,22 @@ function Aspirasi({ session }) {
     "Sampaikan Aspirasi/Pengaduan",
     "Laporkan masalah melalui form",
   ];
+  const quotaExhausted = reportQuota?.remaining === 0;
+  const otherCategorySelected = ["lainnya", "lainya"].includes(form.kategori.trim().toLowerCase());
 
   const sendReport = async () => {
     setSubmitting(true);
     try {
       const image = photo ? (await uploadImage(photo)).image : "";
       await createReport({ ...form, image }, { ownerId: session?.userId, ownerName: session?.name });
-      navigate("/lacak");
+      navigate(otherCategorySelected ? "/" : "/lacak");
     } catch (error) {
-      setSubmitError(error.message || "Laporan gagal dikirim.");
+      if (error.status === 429) {
+        if (error.data?.quota) setReportQuota(error.data.quota);
+        setQuotaModalOpen(true);
+      } else {
+        setSubmitError(error.message || "Laporan gagal dikirim.");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -274,9 +358,15 @@ function Aspirasi({ session }) {
   // laporan serupa, dan tetap kirim hanya setelah warga mengonfirmasi.
   const handleSubmitClick = async () => {
     setSubmitError("");
+    if (quotaExhausted) {
+      setQuotaModalOpen(true);
+      return;
+    }
     if (step === 0 && !form.lokasi.trim()) return setSubmitError("Lokasi laporan wajib diisi.");
-    if (step === 1 && (!form.judul.trim() || !form.kategori || !form.deskripsi.trim())) {
-      return setSubmitError("Judul, kategori, dan deskripsi laporan wajib diisi.");
+    if (step === 1 && (!form.judul.trim() || !form.kategori || !form.deskripsi.trim() || (otherCategorySelected && !form.kategoriLainnya.trim()))) {
+      return setSubmitError(otherCategorySelected
+        ? "Judul, kategori lainnya, dan deskripsi laporan wajib diisi."
+        : "Judul, kategori, dan deskripsi laporan wajib diisi.");
     }
     if (step < 2) return setStep((s) => s + 1);
     if (session?.role === "guest") return setSubmitError("Masuk atau buat akun warga sebelum mengirim laporan.");
@@ -325,6 +415,33 @@ function Aspirasi({ session }) {
       <div className="bg-white rounded-2xl border border-emerald-100 shadow-sm p-4">
         <Stepper current={step} />
 
+        {session?.role !== "guest" && (
+          <div
+            role="status"
+            className={`mt-4 rounded-xl border px-3 py-2 text-xs ${
+              quotaExhausted
+                ? "border-amber-200 bg-amber-50 text-amber-800"
+                : "border-emerald-100 bg-emerald-50 text-emerald-800"
+            }`}
+          >
+            {reportQuota ? (
+              <>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-semibold">Kuota laporan hari ini</span>
+                  <span className="font-bold">{reportQuota.used}/{reportQuota.limit}</span>
+                </div>
+                <p className="mt-1">
+                  {quotaExhausted
+                    ? "Batas harian tercapai. Kuota tersedia kembali pukul 00.00 WIB."
+                    : `Sisa ${reportQuota.remaining} laporan hari ini.`}
+                </p>
+              </>
+            ) : (
+              <p>{quotaLoading ? "Memeriksa kuota laporan hari ini..." : "Kuota akan diperiksa oleh server saat laporan dikirim."}</p>
+            )}
+          </div>
+        )}
+
         {step === 0 && (
           <div className="mt-6">
             <div className="border-2 border-dashed border-emerald-200 bg-emerald-50/50 rounded-2xl flex flex-col items-center py-5 px-4">
@@ -332,14 +449,14 @@ function Aspirasi({ session }) {
                 <>
                   <video ref={videoRef} muted playsInline className="w-full max-w-sm aspect-video rounded-xl bg-black object-cover" />
                   <p className="text-xs text-gray-600 text-center mt-3">Pindai QR di lokasi laporan. Setelah terbaca, aplikasi mengambil posisi GPS ponsel.</p>
-                  <button type="button" onClick={() => setScanActive(false)} className="mt-3 rounded-lg border border-gray-300 bg-white px-4 py-2 text-xs font-semibold text-gray-700">Tutup kamera</button>
+                  <button type="button" onClick={() => { stopScanner(); setScanActive(false); setScanMessage(""); }} className="mt-3 rounded-lg border border-gray-300 bg-white px-4 py-2 text-xs font-semibold text-gray-700">Tutup kamera</button>
                 </>
               ) : (
                 <>
                   <ScanLine size={40} className="text-emerald-600" />
                   <p className="text-sm font-bold text-gray-800 mt-3">Scan QR CODE</p>
                   <p className="text-xs text-gray-500 text-center mt-1">QR yang sama bisa dipakai di tiap tempat. Lokasi laporan ditentukan dari GPS ponsel saat dipindai.</p>
-                  <button type="button" disabled={gpsBusy} onClick={() => { setScanError(""); setScanMessage(""); setScanActive(true); }} className="mt-3 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-500 disabled:opacity-60">Buka pemindai QR</button>
+                  <button type="button" disabled={gpsBusy} onClick={startScanner} className="mt-3 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-500 disabled:opacity-60">Buka pemindai QR</button>
                 </>
               )}
             </div>
@@ -391,6 +508,13 @@ function Aspirasi({ session }) {
                 className="input"
               />
             </Field>
+            <button
+              type="button"
+              onClick={() => setForm((current) => ({ ...current, ...getCurrentReportDateTime() }))}
+              className="mt-2 text-xs font-semibold text-emerald-700 underline underline-offset-2"
+            >
+              Isi waktu dan tanggal sekarang
+            </button>
           </div>
         )}
 
@@ -428,6 +552,23 @@ function Aspirasi({ session }) {
               ))}
             </div>
 
+            {otherCategorySelected && (
+              <>
+                <Field label="Sebutkan kategori lainnya" required className="mt-4">
+                  <input
+                    value={form.kategoriLainnya}
+                    onChange={update("kategoriLainnya")}
+                    placeholder="Contoh: Keamanan lingkungan"
+                    maxLength={80}
+                    className="input"
+                  />
+                </Field>
+                <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+                  Laporan dengan kategori lainnya hanya dapat dilihat oleh admin desa.
+                </p>
+              </>
+            )}
+
             <Field label="Deskripsi" required className="mt-4">
               <textarea
                 value={form.deskripsi}
@@ -446,7 +587,7 @@ function Aspirasi({ session }) {
             <p className="text-xs font-semibold text-gray-700 mb-1">Foto Lokasi (Opsional)</p>
             <label className="border-2 border-dashed border-emerald-200 bg-emerald-50/50 hover:bg-emerald-50 transition rounded-2xl flex flex-col items-center justify-center py-10 cursor-pointer">
               <Camera size={34} className="text-emerald-600" />
-              <p className="text-sm font-bold mt-3 text-gray-700">ambil foto/pilih dari galeri</p>
+              <p className="text-sm font-bold mt-3 text-gray-700">Ambil foto / pilih dari galeri</p>
               <p className="text-xs text-gray-400 mt-1">1 foto, maksimal 5 MB (JPG, PNG, WebP, GIF)</p>
               <input
                 ref={photoInputRef}
@@ -473,7 +614,28 @@ function Aspirasi({ session }) {
               />
             </label>
             {photoBusy && <p className="text-xs text-emerald-700 mt-2">Memproses foto...</p>}
-            {photoPreview && <img src={photoPreview} alt="Foto laporan" className="mt-3 w-full max-h-56 rounded-xl object-cover" />}
+            {photoPreview && (
+              <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50/50 p-3">
+                <img src={photoPreview} alt="Pratinjau foto laporan" className="w-full max-h-64 rounded-xl bg-gray-100 object-contain" />
+                <p className="mt-2 break-all text-xs text-gray-600">{photo?.name}</p>
+                <div className="mt-3 flex gap-2">
+                  <button type="button" onClick={() => photoInputRef.current?.click()} className="flex-1 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white">Ganti foto</button>
+                  <button type="button" onClick={() => { setPhoto(null); setPhotoPreview(""); }} className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700">Hapus</button>
+                </div>
+              </div>
+            )}
+            <p className="mt-2 text-[11px] text-gray-500">Foto akan diunggah saat Anda menekan “Kirim Laporan”.</p>
+
+            {otherCategorySelected ? (
+              <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                <p className="font-bold">Laporan khusus admin</p>
+                <p className="mt-1">Laporan ini tidak akan ditampilkan kepada warga lain atau di Riwayat warga. Admin desa yang dapat melihat dan menindaklanjutinya.</p>
+              </div>
+            ) : (
+              <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50 p-3 text-xs text-blue-900">
+                Laporan kategori ini akan tampil di menu Lacak Laporan dan dapat dilihat warga lain.
+              </div>
+            )}
           </div>
         )}
 
@@ -491,11 +653,12 @@ function Aspirasi({ session }) {
           <button
             onClick={handleSubmitClick}
             disabled={submitting || photoBusy}
+            aria-haspopup={quotaExhausted ? "dialog" : undefined}
             className={`flex-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white py-3 text-xs font-bold shadow-md transition active:scale-95 disabled:opacity-60 ${
               step === 0 ? "w-full" : ""
             }`}
           >
-            {photoBusy ? "Memproses foto..." : submitting ? "Mengirim..." : step < 2 ? "Lanjutkan" : "Kirim Laporan"}
+            {photoBusy ? "Memproses foto..." : submitting ? "Mengirim..." : quotaExhausted ? "Lihat pemberitahuan kuota" : step < 2 ? "Lanjutkan" : "Kirim Laporan"}
           </button>
         </div>
 
@@ -537,6 +700,40 @@ function Aspirasi({ session }) {
           </div>
         )}
       </div>
+
+      {quotaModalOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-gray-900/50 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setQuotaModalOpen(false)
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="report-quota-title"
+            className="w-full max-w-sm rounded-2xl bg-white p-5 text-center shadow-2xl"
+          >
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-amber-100 text-amber-700">
+              <i className="fa-solid fa-circle-exclamation text-2xl" aria-hidden="true" />
+            </div>
+            <h2 id="report-quota-title" className="mt-4 text-base font-bold text-gray-900">
+              Maaf, kuota laporan hari ini sudah habis
+            </h2>
+            <p className="mt-2 text-sm leading-relaxed text-gray-600">
+              Satu akun warga dapat mengirim maksimal 3 laporan per hari. Silakan coba lagi besok setelah pukul 00.00 WIB.
+            </p>
+            <button
+              type="button"
+              autoFocus
+              onClick={() => setQuotaModalOpen(false)}
+              className="mt-5 w-full rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white hover:bg-emerald-500"
+            >
+              Mengerti
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

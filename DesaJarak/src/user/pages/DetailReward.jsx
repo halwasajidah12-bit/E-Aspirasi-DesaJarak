@@ -1,26 +1,53 @@
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, Trophy, Send, ThumbsUp, MessageSquare } from "lucide-react";
-
-const leaderboard = [
-  { nama: "Antoneli", poin: 1000 },
-  { nama: "Gomez", poin: 997 },
-  { nama: "Lasso", poin: 990 },
-];
-
-const aktivitas = [
-  { icon: Send, label: "Pengaduan #JR-89", poin: 20 },
-  { icon: ThumbsUp, label: "Vote pengaduan #S-80", poin: 50 },
-  { icon: MessageSquare, label: "Komentar pada berita", poin: 50 },
-];
+import { getRewards } from "../../utils/api.js";
 
 const cara = [
-  { icon: ThumbsUp, label: "Berikan Vote", poin: 50 },
-  { icon: MessageSquare, label: "Kirim Komentar", poin: 50 },
-  { icon: Send, label: "Kirim Pengaduan", poin: 20 },
+  { icon: ThumbsUp, label: "Berikan Vote", poin: 10 },
+  { icon: MessageSquare, label: "Kirim Komentar", poin: 10 },
+  { icon: Send, label: "Kirim Pengaduan", poin: 50 },
 ];
 
 export default function DetailReward() {
   const navigate = useNavigate();
+  const [reward, setReward] = useState(null);
+  const [showAllActivities, setShowAllActivities] = useState(false);
+  const [loadingAllActivities, setLoadingAllActivities] = useState(false);
+  const [activityError, setActivityError] = useState("");
+  useEffect(() => {
+    let active = true;
+    getRewards().then((data) => { if (active) setReward(data); }).catch(() => {});
+    return () => { active = false; };
+  }, []);
+  const leaderboard = (reward?.leaderboard || []).map((entry) => ({ nama: entry.name, poin: entry.points }));
+  const aktivitas = (reward?.activities || []).map((entry) => ({
+    icon: entry.type === "report" ? Send : entry.type === "vote" ? ThumbsUp : MessageSquare,
+    label: entry.description,
+    poin: entry.points,
+    key: `${entry.type}-${entry.referenceId}`,
+  }));
+  const visibleActivities = showAllActivities ? aktivitas : aktivitas.slice(0, 5);
+
+  const toggleAllActivities = async () => {
+    if (showAllActivities) {
+      setShowAllActivities(false);
+      setActivityError("");
+      return;
+    }
+
+    setLoadingAllActivities(true);
+    setActivityError("");
+    try {
+      const data = await getRewards({ allActivities: true });
+      setReward((current) => ({ ...(current || {}), activities: data.activities || [] }));
+      setShowAllActivities(true);
+    } catch (error) {
+      setActivityError(error.message || "Riwayat aktivitas poin gagal dimuat.");
+    } finally {
+      setLoadingAllActivities(false);
+    }
+  };
 
   return (
     <div className="pb-8">
@@ -36,8 +63,8 @@ export default function DetailReward() {
           </button>
           <div className="flex-1">
             <p className="text-xs text-emerald-100">Poin Anda Saat Ini</p>
-            <p className="text-2xl font-extrabold">1.000</p>
-            <p className="text-[10px] text-emerald-100">Peringkat #15 dari 500 warga</p>
+            <p className="text-2xl font-extrabold">{Number(reward?.points || 0).toLocaleString("id-ID")}</p>
+            <p className="text-[10px] text-emerald-100">Peringkat #{reward?.rank || "–"} dari {reward?.citizenCount || 0} warga</p>
           </div>
           <span className="h-11 w-11 rounded-xl bg-white/15 flex items-center justify-center shrink-0">
             <Trophy size={22} className="text-amber-300" />
@@ -45,7 +72,7 @@ export default function DetailReward() {
         </div>
 
         <div className="grid grid-cols-3 gap-2.5 mt-4">
-          {[["12", "Pengaduan"], ["48", "Vote"], ["23", "Komentar"]].map(([v, l]) => (
+          {[[reward?.counts?.reports || 0, "Pengaduan"], [reward?.counts?.votes || 0, "Vote"], [reward?.counts?.comments || 0, "Komentar"]].map(([v, l]) => (
             <div key={l} className="bg-white/15 rounded-xl py-3 text-center">
               <p className="font-bold text-lg">{v}</p>
               <p className="text-[10px] text-emerald-100">{l}</p>
@@ -73,8 +100,8 @@ export default function DetailReward() {
         <div className="bg-white rounded-2xl border border-emerald-100 shadow-sm p-3.5">
           <p className="text-sm font-bold text-emerald-900 mb-3">Aktivitas Poin Terbaru</p>
           <div className="space-y-3">
-            {aktivitas.map(({ icon: Icon, label, poin }) => (
-              <div key={label} className="flex items-center justify-between text-sm">
+            {visibleActivities.map(({ icon: Icon, label, poin, key }) => (
+              <div key={key} className="flex items-center justify-between text-sm">
                 <span className="flex items-center gap-2 text-gray-700">
                   <Icon size={15} className="text-brand-700" /> {label}
                 </span>
@@ -82,7 +109,16 @@ export default function DetailReward() {
               </div>
             ))}
           </div>
-          <p className="text-right text-xs text-brand-700 font-medium mt-3">Lihat Semua</p>
+          {!aktivitas.length && <p className="text-xs text-gray-500">Belum ada aktivitas berpoin.</p>}
+          {activityError && <p role="alert" className="mt-2 text-xs text-rose-700">{activityError}</p>}
+          <button
+            type="button"
+            onClick={toggleAllActivities}
+            disabled={loadingAllActivities}
+            className="ml-auto mt-3 block text-right text-xs font-medium text-brand-700 hover:underline disabled:cursor-wait disabled:opacity-60"
+          >
+            {loadingAllActivities ? "Memuat..." : showAllActivities ? "Tampilkan Lebih Sedikit" : "Lihat Semua"}
+          </button>
         </div>
 
         <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-3.5">

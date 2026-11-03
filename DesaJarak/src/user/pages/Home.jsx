@@ -2,31 +2,48 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Plus, History, FileText, FolderOpen, Loader2, Users, ThumbsUp, ChevronRight, Trophy } from "lucide-react";
 import { mapApiReport, statusColor } from "../data/laporan";
-import { beritaData } from "../data/berita";
+import { mapAdminNews } from "../data/berita";
 import { profilDesa } from "../data/profilDesa";
-import { getReports } from "../../utils/api.js";
-
-const berita = beritaData.slice(0, 3);
+import { getNews, getReports, getRewards, getVillageProfile } from "../../utils/api.js";
 
 export default function Home() {
   const [laporanData, setLaporanData] = useState([]);
+  const [berita, setBerita] = useState([]);
+  const [profil, setProfil] = useState(profilDesa);
+  const [reward, setReward] = useState({ points: 0, rank: 0, citizenCount: 0 });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
     let mounted = true;
     const refresh = async () => {
-      try {
-        const items = await getReports();
-        if (mounted) {
-          setLaporanData(items.map(mapApiReport));
-          setLoadError("");
-        }
-      } catch (error) {
-        if (mounted) setLoadError(error.message || "Gagal memuat laporan.");
-      } finally {
-        if (mounted) setLoading(false);
+      const [reportsResult, newsResult, profileResult, rewardResult] = await Promise.allSettled([
+        getReports("public"), getNews(), getVillageProfile(), getRewards(),
+      ]);
+      if (!mounted) return;
+      if (reportsResult.status === "fulfilled") {
+        setLaporanData(reportsResult.value.map(mapApiReport));
+        setLoadError("");
+      } else {
+        setLoadError(reportsResult.reason?.message || "Gagal memuat laporan.");
       }
+      if (newsResult.status === "fulfilled") setBerita(newsResult.value.map(mapAdminNews).slice(0, 3));
+      if (rewardResult.status === "fulfilled") setReward(rewardResult.value);
+      if (profileResult.status === "fulfilled") {
+        const value = profileResult.value;
+        const rtRw = String(value.jumlahRtRw || "").match(/\d+/g) || [];
+        setProfil((previous) => ({
+          ...previous,
+          namaDesa: value.namaDesa ?? previous.namaDesa,
+          kecamatan: value.kecamatan ?? previous.kecamatan,
+          kabupaten: value.kabupaten ?? previous.kabupaten,
+          luasWilayah: value.luasWilayah ?? previous.luasWilayah,
+          jumlahRt: Number(rtRw[0] ?? previous.jumlahRt),
+          totalPenduduk: Number(value.totalPenduduk ?? previous.totalPenduduk),
+          kk: Number(value.kk ?? previous.kk),
+        }));
+      }
+      setLoading(false);
     };
     refresh();
     const interval = setInterval(refresh, 5000);
@@ -37,7 +54,7 @@ export default function Home() {
   }, []);
 
   const stats = useMemo(() => [
-    { icon: FileText, value: laporanData.length, label: "Total Aspirasi", iconBg: "bg-emerald-50 text-emerald-600", valueClass: "text-gray-800" },
+    { icon: FileText, value: laporanData.length, label: "Total Aspirasi Publik", iconBg: "bg-emerald-50 text-emerald-600", valueClass: "text-gray-800" },
     { icon: FolderOpen, value: laporanData.filter((l) => l.status === "Masuk").length, label: "Aspirasi Masuk", iconBg: "bg-emerald-50 text-emerald-600", valueClass: "text-emerald-600" },
     { icon: Loader2, value: laporanData.filter((l) => l.status === "Diproses").length, label: "Sedang Diproses", iconBg: "bg-amber-50 text-amber-600", valueClass: "text-amber-600" },
     { icon: Users, value: laporanData.filter((l) => l.status === "Selesai").length, label: "Terselesaikan", iconBg: "bg-blue-50 text-blue-600", valueClass: "text-emerald-600" },
@@ -126,7 +143,7 @@ export default function Home() {
                   {l.id}
                 </span>
                 <div className="flex gap-1">
-                  <span className={`text-[9px] font-bold rounded-full px-2 py-0.5 ${statusColor[l.status]}`}>
+              <span className={`text-[9px] font-bold rounded-full px-2 py-0.5 ${statusColor[l.status] || "bg-gray-100 text-gray-700"}`}>
                     {l.status}
                   </span>
                   <span className="text-[9px] font-bold bg-gray-100 text-gray-700 rounded-full px-2 py-0.5">{l.kategori}</span>
@@ -148,23 +165,7 @@ export default function Home() {
         </div>
       </div>
 
-      {/* CTA laporkan */}
-      <div className="bg-gradient-to-r from-emerald-800 to-emerald-700 text-white p-4 rounded-2xl shadow-sm space-y-1">
-        <h2 className="text-base font-bold">Punya keluhan atau aspirasi?</h2>
-        <p className="text-xs text-emerald-100 leading-relaxed">
-          Laporkan masalah di sekitar Anda lengkap dengan foto dan lokasi GPS
-          melalui <span className="italic">Geotagging</span> untuk penanganan
-          lebih cepat.
-        </p>
-        <Link
-          to="/aspirasi"
-          className="inline-block mt-2 bg-emerald-500 hover:bg-emerald-400 text-emerald-950 font-bold text-xs rounded-xl px-4 py-2 transition active:scale-95"
-        >
-          Mulai Laporan
-        </Link>
-      </div>
-
-            {/* Berita Desa */}
+      {/* Berita Desa */}
       <div className="bg-white p-3.5 rounded-2xl shadow-sm border border-emerald-100 space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-bold text-emerald-900">Berita Desa</h2>
@@ -179,7 +180,7 @@ export default function Home() {
               to={`/berita/${b.id}`}
               className="p-2.5 bg-gray-50 rounded-xl flex items-center gap-2.5"
             >
-              <img src={b.image} alt={b.judul} className="w-12 h-12 rounded-lg object-cover flex-shrink-0" />
+              {b.image && <img src={b.image} alt={b.judul} className="w-12 h-12 rounded-lg object-cover flex-shrink-0" />}
               <div className="min-w-0">
                 <span className="text-[9px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded">
                   {b.kategori}
@@ -204,23 +205,23 @@ export default function Home() {
           <div className="divide-y divide-gray-100 text-xs">
             <div className="py-1.5 flex justify-between gap-3">
               <span className="text-gray-500">Desa</span>
-              <span className="font-semibold text-gray-800 text-right">{profilDesa.namaDesa}</span>
+              <span className="font-semibold text-gray-800 text-right">{profil.namaDesa}</span>
             </div>
             <div className="py-1.5 flex justify-between gap-3">
               <span className="text-gray-500">Kecamatan / Kabupaten</span>
-              <span className="font-semibold text-gray-800 text-right">{profilDesa.kecamatan}, {profilDesa.kabupaten}</span>
+              <span className="font-semibold text-gray-800 text-right">{profil.kecamatan}, {profil.kabupaten}</span>
             </div>
             <div className="py-1.5 flex justify-between gap-3">
               <span className="text-gray-500">Luas Wilayah</span>
-              <span className="font-semibold text-gray-800 text-right">{profilDesa.luasWilayah}</span>
+              <span className="font-semibold text-gray-800 text-right">{profil.luasWilayah}</span>
             </div>
             <div className="py-1.5 flex justify-between gap-3">
               <span className="text-gray-500">Total Penduduk</span>
-              <span className="font-semibold text-gray-800 text-right">{profilDesa.totalPenduduk.toLocaleString("id-ID")} Jiwa</span>
+              <span className="font-semibold text-gray-800 text-right">{profil.totalPenduduk.toLocaleString("id-ID")} Jiwa</span>
             </div>
             <div className="py-1.5 flex justify-between gap-3">
               <span className="text-gray-500">Kartu Keluarga</span>
-              <span className="font-semibold text-gray-800 text-right">{profilDesa.kk.toLocaleString("id-ID")}</span>
+              <span className="font-semibold text-gray-800 text-right">{profil.kk.toLocaleString("id-ID")}</span>
             </div>
           </div>
         </div>
@@ -235,8 +236,8 @@ export default function Home() {
               Lihat detail <ChevronRight size={12} />
             </Link>
           </div>
-          <p className="text-2xl font-extrabold text-gray-800">1.000</p>
-          <p className="text-[10px] text-gray-500">Peringkat #12 dari 500 warga</p>
+          <p className="text-2xl font-extrabold text-gray-800">{Number(reward.points || 0).toLocaleString("id-ID")}</p>
+          <p className="text-[10px] text-gray-500">Peringkat #{reward.rank || "–"} dari {reward.citizenCount || 0} warga</p>
           <div className="h-1.5 rounded-full bg-amber-100 mt-2 overflow-hidden">
             <div className="h-full w-[55%] bg-amber-500 rounded-full" />
           </div>

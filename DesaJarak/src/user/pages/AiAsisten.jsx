@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { askAssistant } from "../../utils/api";
 import {
   ArrowLeft,
   MoreVertical,
@@ -10,11 +9,12 @@ import {
   Send,
   CheckCheck,
 } from "lucide-react";
+import { askAssistant } from "../../utils/api.js";
 
 const quickQuestions = [
   "Bagaimana caranya melapor?",
   "Berapa hari aspirasi ditindaklanjuti?",
-  "Apakah data pelapor dijaga privasinya?",
+  "Siapa yang dapat melihat laporan saya?",
 ];
 
 function formatTime(date) {
@@ -47,17 +47,10 @@ export default function AiAsisten() {
     setIsTyping(true);
 
     try {
-      const data = await askAssistant(value);
-      setMessages((m) => [...m, { from: "bot", text: data.reply || "Maaf, saya belum menemukan jawabannya.", time: new Date() }]);
+      const result = await askAssistant(value);
+      setMessages((m) => [...m, { from: "bot", text: result.reply || "Maaf, saya belum menemukan jawabannya.", time: new Date() }]);
     } catch (error) {
-      setMessages((m) => [
-        ...m,
-        {
-          from: "bot",
-          text: error.message || "Maaf, layanan asisten sedang bermasalah. Coba lagi beberapa saat ya.",
-          time: new Date(),
-        },
-      ]);
+      setMessages((m) => [...m, { from: "bot", text: error.message || "Maaf, layanan asisten sedang bermasalah. Coba lagi beberapa saat ya.", time: new Date() }]);
     } finally {
       setIsTyping(false);
     }
