@@ -86,6 +86,14 @@ export const updateEmailPreferences = (enabled) => jsonRequest('/user/email-pref
   method: 'PUT',
   body: JSON.stringify({ enabled }),
 })
+export const requestEmailOtp = (email) => jsonRequest('/user/email-otp', {
+  method: 'POST',
+  body: JSON.stringify({ email }),
+})
+export const verifyEmailOtp = (code) => jsonRequest('/user/email-otp/verify', {
+  method: 'POST',
+  body: JSON.stringify({ code }),
+})
 export const askAssistant = (message) => jsonRequest('/assistant', {
   method: 'POST',
   body: JSON.stringify({ message }),

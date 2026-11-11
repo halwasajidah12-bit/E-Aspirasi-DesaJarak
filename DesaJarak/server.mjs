@@ -1,6 +1,6 @@
 import { createReadStream, readFileSync, existsSync } from "node:fs";
 import { readFile, stat, mkdir } from "node:fs/promises";
-import { createHash, randomBytes, scryptSync } from "node:crypto";
+import { createHash, randomBytes, randomInt, scryptSync, timingSafeEqual } from "node:crypto";
 import { basename, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
@@ -719,6 +719,11 @@ const initDatabase = async () => {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_token_hash TEXT;`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_expires_at TIMESTAMPTZ;`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_sent_at TIMESTAMPTZ;`);
+    await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_email TEXT;");
+    await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_otp_hash TEXT;");
+    await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_otp_expires_at TIMESTAMPTZ;");
+    await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_otp_sent_at TIMESTAMPTZ;");
+    await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_otp_attempts INT NOT NULL DEFAULT 0;");
     await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub_unique ON users (google_sub) WHERE google_sub IS NOT NULL;`);
 
     await pool.query(`ALTER TABLE komentar ALTER COLUMN aspirasi_id TYPE TEXT;`);
@@ -929,6 +934,126 @@ const handleApi = async (request, response, url) => {
     });
   }
 
+  if (request.method === "POST" && pathname === "/api/user/email-otp") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk menautkan email." });
+    if (!process.env.RESEND_API_KEY || !process.env.RESEND_FROM_EMAIL) {
+      return sendJson(response, 503, { message: "Pengiriman email belum dikonfigurasi oleh pengelola website." });
+    }
+
+    const body = await readJson(request);
+    const email = String(body.email || "").trim().toLowerCase();
+    if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return sendJson(response, 400, { message: "Masukkan alamat email yang valid." });
+    }
+
+    const userResult = await pool.query(
+      "SELECT id, email, email_verified, fullname, email_otp_sent_at FROM users WHERE id = $1",
+      [principal.id],
+    );
+    const user = userResult.rows[0];
+    if (!user) return sendJson(response, 404, { message: "Akun warga tidak ditemukan." });
+    if (user.email_verified && String(user.email || "").toLowerCase() === email) {
+      return sendJson(response, 200, { alreadyLinked: true, email: user.email, emailVerified: true });
+    }
+
+    const duplicate = await pool.query(
+      "SELECT 1 FROM users WHERE LOWER(email) = $1 AND id <> $2 LIMIT 1",
+      [email, user.id],
+    );
+    if (duplicate.rowCount) return sendJson(response, 409, { message: "Email tersebut sudah terhubung ke akun lain." });
+
+    if (user.email_otp_sent_at && Date.now() - new Date(user.email_otp_sent_at).getTime() < 60_000) {
+      return sendJson(response, 429, { message: "Kode baru saja dikirim. Tunggu satu menit sebelum meminta kode lagi." });
+    }
+
+    const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
+    const codeHash = createHash("sha256").update(String(user.id) + ":" + email + ":" + code).digest("hex");
+    await pool.query(
+      "UPDATE users SET pending_email = $1, email_otp_hash = $2, email_otp_expires_at = NOW() + INTERVAL '10 minutes', email_otp_sent_at = NOW(), email_otp_attempts = 0 WHERE id = $3",
+      [email, codeHash, user.id],
+    );
+
+    const recipientName = user.fullname || principal.nama || "Warga Desa";
+    const safeRecipientName = escapeHtml(recipientName);
+    const sent = await sendTransactionalEmail({
+      to: email,
+      subject: "Kode OTP penautan email E-Aspirasi Desa Jarak",
+      text: "Halo " + recipientName + ", kode OTP Anda adalah " + code + ". Kode berlaku selama 10 menit. Jangan bagikan kode ini kepada siapa pun.",
+      html: "<p>Halo " + safeRecipientName + ",</p><p>Gunakan kode berikut untuk menautkan email ke akun E-Aspirasi Desa Jarak:</p><p style=\"font-size:28px;font-weight:bold;letter-spacing:6px\">" + code + "</p><p>Kode berlaku selama 10 menit dan hanya dapat dicoba 5 kali. Jangan bagikan kode ini kepada siapa pun.</p>",
+    });
+    if (!sent) {
+      await pool.query(
+        "UPDATE users SET pending_email = NULL, email_otp_hash = NULL, email_otp_expires_at = NULL, email_otp_sent_at = NULL, email_otp_attempts = 0 WHERE id = $1",
+        [user.id],
+      );
+      return sendJson(response, 502, { message: "Email OTP gagal dikirim. Periksa konfigurasi email atau alamat tujuan." });
+    }
+    return sendJson(response, 200, { sent: true, email });
+  }
+
+  if (request.method === "POST" && pathname === "/api/user/email-otp/verify") {
+    if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk menautkan email." });
+    const body = await readJson(request);
+    const code = String(body.code || "").trim();
+    if (!/^\d{6}$/.test(code)) return sendJson(response, 400, { message: "Masukkan kode OTP 6 digit." });
+
+    const result = await pool.query(
+      "SELECT id, pending_email, email_otp_hash, email_otp_expires_at, email_otp_attempts FROM users WHERE id = $1",
+      [principal.id],
+    );
+    const user = result.rows[0];
+    if (!user?.pending_email || !user.email_otp_hash || !user.email_otp_expires_at) {
+      return sendJson(response, 400, { message: "Belum ada OTP aktif. Minta kode baru terlebih dahulu." });
+    }
+    if (new Date(user.email_otp_expires_at).getTime() <= Date.now()) {
+      await pool.query(
+        "UPDATE users SET pending_email = NULL, email_otp_hash = NULL, email_otp_expires_at = NULL, email_otp_attempts = 0 WHERE id = $1",
+        [user.id],
+      );
+      return sendJson(response, 410, { message: "Kode OTP sudah kedaluwarsa. Minta kode baru." });
+    }
+    if (user.email_otp_attempts >= 5) {
+      await pool.query(
+        "UPDATE users SET pending_email = NULL, email_otp_hash = NULL, email_otp_expires_at = NULL, email_otp_attempts = 0 WHERE id = $1",
+        [user.id],
+      );
+      return sendJson(response, 429, { message: "Batas percobaan OTP habis. Minta kode baru." });
+    }
+
+    const expectedHash = Buffer.from(
+      createHash("sha256").update(String(user.id) + ":" + user.pending_email + ":" + code).digest("hex"),
+      "hex",
+    );
+    const storedHash = Buffer.from(user.email_otp_hash, "hex");
+    const validCode = storedHash.length === expectedHash.length && timingSafeEqual(storedHash, expectedHash);
+    if (!validCode) {
+      const attempts = user.email_otp_attempts + 1;
+      await pool.query(
+        attempts >= 5
+          ? "UPDATE users SET pending_email = NULL, email_otp_hash = NULL, email_otp_expires_at = NULL, email_otp_attempts = 0 WHERE id = $1"
+          : "UPDATE users SET email_otp_attempts = $1 WHERE id = $2",
+        attempts >= 5 ? [user.id] : [attempts, user.id],
+      );
+      return sendJson(response, attempts >= 5 ? 429 : 400, {
+        message: attempts >= 5 ? "Batas percobaan OTP habis. Minta kode baru." : "Kode OTP salah. Sisa percobaan: " + (5 - attempts) + ".",
+      });
+    }
+
+    try {
+      const linked = await pool.query(
+        "UPDATE users SET email = pending_email, email_verified = TRUE, email_notifications_enabled = FALSE, pending_email = NULL, email_otp_hash = NULL, email_otp_expires_at = NULL, email_otp_sent_at = NULL, email_otp_attempts = 0, email_verification_token_hash = NULL, email_verification_expires_at = NULL, email_verification_sent_at = NULL WHERE id = $1 RETURNING email",
+        [user.id],
+      );
+      return sendJson(response, 200, {
+        email: linked.rows[0]?.email || user.pending_email,
+        emailVerified: true,
+        emailNotificationsEnabled: false,
+      });
+    } catch (error) {
+      if (error.code === "23505") return sendJson(response, 409, { message: "Email tersebut sudah terhubung ke akun lain." });
+      throw error;
+    }
+  }
   if (request.method === "PUT" && pathname === "/api/user/email-preferences") {
     if (!principal || isAdmin(principal)) return sendJson(response, 401, { message: "Masuk sebagai warga untuk mengatur notifikasi email." });
     const body = await readJson(request);
@@ -1970,7 +2095,7 @@ if (request.method === "GET" && pathname === "/api/ai/classify-test") {
     if (id !== principal.username && id !== principal.email) return sendJson(response, 403, { message: "Anda hanya dapat membuka profil sendiri." });
     try {
       const result = await pool.query(
-        "SELECT id, username, fullname, nama, email, no_telepon, alamat, foto, nik FROM users WHERE username = $1 OR email = $1",
+        "SELECT id, username, fullname, nama, email, email_verified, no_telepon, alamat, foto, nik FROM users WHERE username = $1 OR email = $1",
         [id]
       );
       if (result.rows.length === 0) {

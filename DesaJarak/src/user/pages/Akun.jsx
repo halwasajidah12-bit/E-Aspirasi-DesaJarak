@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { ArrowLeft, History, FileText, GraduationCap, Camera, Save, X } from "lucide-react";
-import { getUserProfile, privateUploadUrl, updateUserProfile } from "../../utils/api.js";
+import { ArrowLeft, History, FileText, GraduationCap, Camera, Save, X, Mail, ShieldCheck } from "lucide-react";
+import { getUserProfile, privateUploadUrl, requestEmailOtp, updateUserProfile, verifyEmailOtp } from "../../utils/api.js";
 import ProtectedImage from "../components/ProtectedImage.jsx";
 
 const userPhotoUrl = (photo) => {
@@ -31,11 +31,21 @@ export default function Akun({ session }) {
     no_telepon: "-",
     alamat: "-",
     foto: "https://i.pravatar.cc/200?img=12",
+    email: "",
+    email_verified: false,
   });
 
   const [editData, setEditData] = useState({ ...profile });
   const [selectedFile, setSelectedFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState("");
+  const [emailAddress, setEmailAddress] = useState("");
+  const [linkedEmail, setLinkedEmail] = useState("");
+  const [emailVerified, setEmailVerified] = useState(false);
+  const [otpCode, setOtpCode] = useState("");
+  const [otpTarget, setOtpTarget] = useState("");
+  const [otpSent, setOtpSent] = useState(false);
+  const [emailBusy, setEmailBusy] = useState(false);
+  const [emailFeedback, setEmailFeedback] = useState({ message: "", type: "" });
 
   useEffect(() => {
     if (session?.userId && session.role !== 'guest') {
@@ -47,9 +57,14 @@ export default function Akun({ session }) {
             no_telepon: data.no_telepon || "-",
             alamat: data.alamat || "-",
             foto: userPhotoUrl(data.foto),
+            email: data.email || session.email || "",
+            email_verified: Boolean(data.email_verified),
           };
           setProfile(loadedProfile);
           setEditData(loadedProfile);
+          setEmailAddress(loadedProfile.email);
+          setLinkedEmail(loadedProfile.email);
+          setEmailVerified(loadedProfile.email_verified);
         })
         .catch(err => console.error("Gagal memuat profil:", err))
         .finally(() => setIsLoading(false));
@@ -91,13 +106,14 @@ export default function Akun({ session }) {
       const updated = await updateUserProfile(session.userId, formData);
       const newFotoUrl = updated.foto ? userPhotoUrl(updated.foto) : previewUrl || editData.foto;
       
-      setProfile({
+      setProfile((current) => ({
+        ...current,
         fullname: updated.fullname,
         nik: updated.nik || editData.nik,
         no_telepon: updated.no_telepon,
         alamat: updated.alamat,
-        foto: newFotoUrl
-      });
+        foto: newFotoUrl,
+      }));
       
       setIsEditing(false);
       setSelectedFile(null);
@@ -122,6 +138,64 @@ export default function Akun({ session }) {
     setPreviewUrl("");
     setSelectedFile(null);
     setIsEditing(false);
+  };
+
+  const emailIsLinked = emailVerified && emailAddress.trim().toLowerCase() === linkedEmail.trim().toLowerCase();
+
+  const handleSendEmailOtp = async () => {
+    const normalizedEmail = emailAddress.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      setEmailFeedback({ message: "Masukkan alamat email yang valid.", type: "error" });
+      return;
+    }
+    if (emailIsLinked) return;
+
+    setEmailBusy(true);
+    setEmailFeedback({ message: "", type: "" });
+    try {
+      const result = await requestEmailOtp(normalizedEmail);
+      if (result.alreadyLinked) {
+        setLinkedEmail(result.email || normalizedEmail);
+        setEmailAddress(result.email || normalizedEmail);
+        setEmailVerified(true);
+        setOtpSent(false);
+        setEmailFeedback({ message: "Email ini sudah tertaut dan terverifikasi.", type: "success" });
+        return;
+      }
+      setOtpTarget(result.email || normalizedEmail);
+      setOtpCode("");
+      setOtpSent(true);
+      setEmailFeedback({ message: `Kode OTP telah dikirim ke ${result.email || normalizedEmail}.`, type: "success" });
+    } catch (error) {
+      setEmailFeedback({ message: error.message || "Kode OTP gagal dikirim.", type: "error" });
+    } finally {
+      setEmailBusy(false);
+    }
+  };
+
+  const handleVerifyEmailOtp = async () => {
+    if (!/^\d{6}$/.test(otpCode)) {
+      setEmailFeedback({ message: "Masukkan kode OTP 6 digit.", type: "error" });
+      return;
+    }
+    setEmailBusy(true);
+    setEmailFeedback({ message: "", type: "" });
+    try {
+      const result = await verifyEmailOtp(otpCode);
+      const verifiedEmail = result.email || otpTarget;
+      setEmailAddress(verifiedEmail);
+      setLinkedEmail(verifiedEmail);
+      setEmailVerified(true);
+      setProfile((current) => ({ ...current, email: verifiedEmail, email_verified: true }));
+      setOtpCode("");
+      setOtpTarget("");
+      setOtpSent(false);
+      setEmailFeedback({ message: "Email berhasil ditautkan dan diverifikasi. Aktifkan notifikasi email melalui Pengaturan jika diperlukan.", type: "success" });
+    } catch (error) {
+      setEmailFeedback({ message: error.message || "Kode OTP tidak dapat diverifikasi.", type: "error" });
+    } finally {
+      setEmailBusy(false);
+    }
   };
 
   const fields = [
@@ -211,6 +285,65 @@ export default function Akun({ session }) {
             ) : (
               <div className={`bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-xs min-h-[38px] flex items-center ${f.disabled && isEditing ? "opacity-60 cursor-not-allowed" : ""}`}>
                 {isLoading ? "Memuat..." : f.value}
+              </div>
+            )}
+            {f.name === "nik" && session?.role !== "guest" && (
+              <div className="mt-4 border-t border-gray-100 pt-4">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <label htmlFor="account-email" className="text-xs font-semibold text-gray-700">Email</label>
+                  {emailIsLinked && <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-1 text-[10px] font-semibold text-emerald-700"><ShieldCheck size={12} /> Tertaut</span>}
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    id="account-email"
+                    type="email"
+                    autoComplete="email"
+                    value={emailAddress}
+                    onChange={(event) => {
+                      setEmailAddress(event.target.value);
+                      setEmailFeedback({ message: "", type: "" });
+                    }}
+                    placeholder="nama@email.com"
+                    className="min-w-0 flex-1 rounded-xl border border-emerald-300 bg-white px-3 py-2.5 text-xs outline-none transition focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleSendEmailOtp}
+                    disabled={emailBusy || emailIsLinked}
+                    className="inline-flex shrink-0 items-center justify-center gap-1 rounded-xl bg-emerald-600 px-3 py-2.5 text-xs font-bold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Mail size={14} /> {emailBusy ? "Mengirim..." : "Kirim OTP"}
+                  </button>
+                </div>
+                {emailVerified && !emailIsLinked && <p className="mt-1 text-[11px] text-amber-700">Email yang tertaut saat ini: {linkedEmail}. Verifikasi alamat baru untuk menggantinya.</p>}
+                {!emailVerified && <p className="mt-1 text-[11px] text-gray-500">Verifikasi email agar dapat ditautkan ke akun Anda.</p>}
+                {otpSent && (
+                  <div className="mt-3 rounded-xl bg-emerald-50 p-3">
+                    <p className="mb-2 text-[11px] text-emerald-800">Masukkan kode 6 digit yang dikirim ke <strong>{otpTarget}</strong>. Kode berlaku 10 menit.</p>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        aria-label="Kode OTP email"
+                        value={otpCode}
+                        onChange={(event) => setOtpCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                        placeholder="000000"
+                        maxLength={6}
+                        className="min-w-0 flex-1 rounded-xl border border-emerald-200 bg-white px-3 py-2.5 text-center text-sm tracking-[0.35em] outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleVerifyEmailOtp}
+                        disabled={emailBusy || otpCode.length !== 6}
+                        className="shrink-0 rounded-xl bg-emerald-700 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {emailBusy ? "Memeriksa..." : "Verifikasi"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {emailFeedback.message && <p role={emailFeedback.type === "error" ? "alert" : "status"} className={`mt-2 text-[11px] ${emailFeedback.type === "error" ? "text-rose-700" : "text-emerald-700"}`}>{emailFeedback.message}</p>}
               </div>
             )}
           </div>

@@ -185,9 +185,23 @@ export default function Pengaturan({ session }) {
             </div>
             <Toggle checked={email} onChange={toggleEmail} disabled={emailState.loading || savingEmail || session?.role === "guest" || (!emailState.configured && !email)} />
           </div>
-          <p className="mt-2 text-[11px] text-gray-500">
-            {emailState.loading ? "Memuat preferensi email..." : emailState.address ? `${emailState.address} (${emailState.verified ? "terverifikasi" : "belum terverifikasi"})` : "Email akun tidak tersedia."}
-          </p>
+          {emailState.loading && <p className="mt-2 text-[11px] text-gray-500">Memuat preferensi email...</p>}
+          {!emailState.loading && !emailState.address && session?.role !== "guest" && (
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+              <p className="text-gray-500">Belum ada email tertaut ke akun ini.</p>
+              <button type="button" onClick={() => navigate("/akun")} className="font-semibold text-emerald-700 hover:text-emerald-800">
+                Tambahkan email di Akun
+              </button>
+            </div>
+          )}
+          {!emailState.loading && emailState.address && !emailState.verified && (
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+              <p className="text-amber-700">{emailState.address} belum terverifikasi.</p>
+              <button type="button" onClick={() => navigate("/akun")} className="font-semibold text-emerald-700 hover:text-emerald-800">
+                Verifikasi melalui Akun
+              </button>
+            </div>
+          )}
           {!emailState.configured && session?.role !== "guest" && <p className="mt-1 text-[11px] text-amber-700">Layanan pengiriman email belum dikonfigurasi pengelola.</p>}
           {emailState.message && <p role={emailState.messageType === "error" ? "alert" : "status"} className={`mt-1 text-[11px] ${emailState.messageType === "error" ? "text-rose-700" : emailState.messageType === "info" ? "text-blue-700" : "text-emerald-700"}`}>{emailState.message}</p>}
           {session?.role === "guest" && <p className="mt-1 text-[11px] text-gray-500">Masuk ke akun warga untuk mengatur email.</p>}
@@ -203,8 +217,16 @@ export default function Pengaturan({ session }) {
             />
           </div>
           {pushState.loading ? <p className="mt-1 text-[11px] text-gray-500">Memeriksa notifikasi di perangkat ini...</p> : null}
-          <p className="mt-1 text-[11px] text-gray-500">Riwayat notifikasi tetap tersedia di lonceng dashboard.</p>
-          {!pushState.loading && session?.role !== "guest" && pushState.configured && !pushEnabled && <p className="mt-1 text-[11px] text-gray-500">Belum aktif di perangkat ini. Aktifkan di sini lalu izinkan notifikasi dari browser.</p>}
+          {!pushState.loading && session?.role !== "guest" && pushState.configured && !pushEnabled && (
+            <button
+              type="button"
+              onClick={togglePushNotifications}
+              disabled={savingPush}
+              className="mt-1 text-left text-[11px] font-semibold text-emerald-700 underline decoration-emerald-300 underline-offset-2 hover:text-emerald-800 disabled:cursor-wait disabled:opacity-60"
+            >
+              Ketuk di sini untuk mengaktifkan izin notifikasi push di perangkat ini
+            </button>
+          )}
           {pushState.message && <p role={pushState.messageType === "error" ? "alert" : "status"} className={`mt-1 text-[11px] ${pushState.messageType === "error" ? "text-rose-700" : "text-emerald-700"}`}>{pushState.message}</p>}
           {session?.role === "guest" && <p className="mt-1 text-[11px] text-gray-500">Masuk ke akun warga untuk mengatur notifikasi HP.</p>}
         </Card>
