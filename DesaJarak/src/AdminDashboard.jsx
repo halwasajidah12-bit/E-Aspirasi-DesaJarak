@@ -325,6 +325,7 @@ export default function AdminDashboard({ adminName, onLogout }) {
           ref={bodyRef}
           className="flex-1 min-w-0 no-scrollbar p-3 xs:p-4 md:p-0 space-y-3.5 pb-24 md:pb-4"
         >
+
         {activeTab === 'beranda' && (
           <Beranda
             profil={profil}

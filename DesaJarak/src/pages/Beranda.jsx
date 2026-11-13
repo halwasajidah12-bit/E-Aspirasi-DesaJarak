@@ -2,6 +2,7 @@ import { StatusBadge, UrgencyBadge } from '../utils/badges.jsx'
 import { formatNumber } from '../utils/helpers.js'
 
 export default function Beranda({ profil, reports, news, stats, onSwitchTab, onOpenReportDetail, onUpdateReportStatus }) {
+
   const newestFirst = (items, timestamp) => [...items].sort((a, b) => {
     const getTime = (item) => {
       const value = timestamp(item)

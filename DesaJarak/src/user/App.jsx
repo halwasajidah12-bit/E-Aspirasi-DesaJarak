@@ -12,7 +12,7 @@ import LacakLaporan from "./pages/LacakLaporan";
 import DetailLaporan from "./pages/DetailLaporan";
 import VotePrioritas from "./pages/VotePrioritas";
 import BeritaDesa from "./pages/BeritaDesa";
-import BeritaDetail from "./pages/BeritaDetail";
+import BeritaDetail from "./pages/BeritaDetail"
 import InfoDesa from "./pages/InfoDesa";
 import Riwayat from "./pages/Riwayat";
 import Akun from "./pages/Akun";

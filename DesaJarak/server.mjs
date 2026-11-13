@@ -108,26 +108,6 @@ const loadAllowedCategories = async () => {
   }
 };
 
-const loadEnv = () => {
-  const envPaths = [join(process.cwd(), ".env"), join(root, ".env")];
-  for (const envPath of envPaths) {
-    if (existsSync(envPath)) {
-      const content = readFileSync(envPath, "utf-8");
-      for (const line of content.split("\n")) {
-        const trimmed = line.trim();
-        if (trimmed && !trimmed.startsWith("#") && trimmed.includes("=")) {
-          const [key, ...values] = trimmed.split("=");
-          const value = values.join("=").trim().replace(/^["']|["']$/g, "");
-          if (!process.env[key.trim()]) {
-            process.env[key.trim()] = value;
-          }
-        }
-      }
-      break;
-    }
-  }
-};
-loadEnv();
 const googleAuthClient = new OAuth2Client();
 
 // Konfigurasi Gemini AI
