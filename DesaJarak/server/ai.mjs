@@ -4,7 +4,7 @@
 // laporan tidak boleh gagal karena AI.
 
 const DEFAULT_TIMEOUT_MS = 15_000;
-export const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash"; 
+export const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.0-flash"; 
 
 const withTimeout = async (promise, label, timeoutMs = DEFAULT_TIMEOUT_MS) => {
   let timer;
