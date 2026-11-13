@@ -30,6 +30,7 @@ import {
   analyzeCommentsLocally,
   summarizePrioritiesWithGemini,
   computePriorityScore,
+  DEFAULT_GEMINI_MODEL,
 } from "./server/ai.mjs";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
@@ -130,26 +131,7 @@ loadEnv();
 const googleAuthClient = new OAuth2Client();
 
 // Konfigurasi Gemini AI
-const token = process.env.GEMINI_API_KEY;
 
-let ai = null;
-
-if (!token) {
-  console.warn("GEMINI_API_KEY not set - AI classification will fail.");
-} else if (token.startsWith("AIzaSy")) {
-  // Standard API Key from AI Studio
-  ai = new GoogleGenAI({ apiKey: token });
-} else {
-  // Bearer/OAuth token
-  ai = new GoogleGenAI({
-    apiKey: token,
-    httpOptions: {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    },
-  });
-}
 
 const normalizeSslMode = (value) => String(value || "").trim().toLowerCase();
 const isLocalDatabaseHost = (host) =>
@@ -180,8 +162,8 @@ const analyzeReportPriorityWithGemini = async ({
       String(comment.text || "")
     );
 
-    const result = await ai.models.generateContent({
-      model: "gemini-3.5-flash-lite",
+   const result = await ai.models.generateContent({
+  model: DEFAULT_GEMINI_MODEL, 
       contents: `
 Kamu adalah AI analis laporan pelayanan masyarakat desa.
 
@@ -1461,7 +1443,7 @@ const handleApi = async (request, response, url) => {
     if (ai) {
       try {
         const result = await ai.models.generateContent({
-          model: "gemini-3.5-flash-lite",
+  model: DEFAULT_GEMINI_MODEL, 
           contents: `Kamu asisten layanan warga Desa ${assistantProfile.namaDesa}. Jawab singkat, sopan, dalam Bahasa Indonesia. Jangan mengarang kebijakan/nomor kontak. Jika data tidak tersedia, katakan demikian.\nPengguna ini adalah ${adminScope ? "ADMIN desa: boleh merangkum data internal secara lengkap, boleh membantu menyusun draf tanggapan resmi dan draf berita." : "WARGA biasa: hanya jelaskan cara memakai layanan dan informasi umum."}\nProfil desa: ${JSON.stringify(assistantProfile)}\nData aspirasi yang boleh diketahui pengguna ini: ${JSON.stringify(reportContext)}\n\nPertanyaan: ${message}`,
         });
         if (result.text?.trim()) return sendJson(response, 200, { reply: result.text.trim(), mode: "ai" });
