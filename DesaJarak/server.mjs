@@ -131,7 +131,15 @@ loadEnv();
 const googleAuthClient = new OAuth2Client();
 
 // Konfigurasi Gemini AI
+const rawToken = process.env.GEMINI_API_KEY;
+const token = rawToken ? String(rawToken).trim().replace(/^["']|["']$/g, "") : "";
 
+let ai = null; 
+if (!token) {
+  console.warn("GEMINI_API_KEY not set - AI classification will fail.");
+} else {
+  ai = new GoogleGenAI({ apiKey: token }); 
+}
 
 const normalizeSslMode = (value) => String(value || "").trim().toLowerCase();
 const isLocalDatabaseHost = (host) =>
