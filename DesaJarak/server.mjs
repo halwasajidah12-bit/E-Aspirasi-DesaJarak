@@ -31,6 +31,7 @@ import {
   summarizePrioritiesWithGemini,
   computePriorityScore,
   DEFAULT_GEMINI_MODEL,
+  withTimeout,
 } from "./server/ai.mjs";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
@@ -145,14 +146,19 @@ const analyzeReportPriorityWithGemini = async ({
   votes = 0,
   comments = [],
 }) => {
+  if (!ai) return null;
   try {
     const commentTexts = comments.map((comment) =>
       String(comment.text || "")
     );
 
-   const result = await ai.models.generateContent({
-  model: DEFAULT_GEMINI_MODEL, 
-      contents: `
+    const result = await withTimeout(
+      ai.models.generateContent({
+        model: "gemini-3.5-flash-lite",
+        config: {
+          abortSignal: AbortSignal.timeout(12000),
+        },
+        contents: `
 Kamu adalah AI analis laporan pelayanan masyarakat desa.
 
 Analisis laporan berikut untuk menentukan tingkat prioritas penanganan.
@@ -191,7 +197,10 @@ Balas HANYA dalam format JSON:
   "reason": "Alasan penentuan prioritas"
 }
 `,
-    });
+      }),
+      "Gemini analisis prioritas",
+      12000,
+    );
 
     const text = result.text.trim()
       .replace(/^```json\s*/i, "")
@@ -211,7 +220,7 @@ Balas HANYA dalam format JSON:
       reason: String(analysis.reason || ""),
     };
   } catch (error) {
-    console.error("Gemini analisis prioritas gagal:", error);
+    console.error("Gemini analisis prioritas gagal:", error.message || error);
     return null;
   }
 };
@@ -1417,7 +1426,9 @@ const handleApi = async (request, response, url) => {
     if (!message) return sendJson(response, 400, { message: "Tulis pertanyaan terlebih dahulu." });
     const reportResult = await pool.query("SELECT data_value FROM app_data WHERE data_key = 'reports'");
     const availableReports = (reportResult.rows[0]?.data_value || []).filter((report) => canAccessReport(report, principal));
-    const reportContext = availableReports.map(({ id, title, status, category }) => ({ id, title, status, category }));
+    const reportContext = availableReports
+      .slice(0, 30)
+      .map(({ id, title, status, category }) => ({ id, title, status, category }));
     const adminScope = isAdmin(principal);
     const assistantProfile = {
       namaDesa: profilDesa.namaDesa,
@@ -1430,13 +1441,20 @@ const handleApi = async (request, response, url) => {
     };
     if (ai) {
       try {
-        const result = await ai.models.generateContent({
-  model: DEFAULT_GEMINI_MODEL, 
-          contents: `Kamu asisten layanan warga Desa ${assistantProfile.namaDesa}. Jawab singkat, sopan, dalam Bahasa Indonesia. Jangan mengarang kebijakan/nomor kontak. Jika data tidak tersedia, katakan demikian.\nPengguna ini adalah ${adminScope ? "ADMIN desa: boleh merangkum data internal secara lengkap, boleh membantu menyusun draf tanggapan resmi dan draf berita." : "WARGA biasa: hanya jelaskan cara memakai layanan dan informasi umum."}\nProfil desa: ${JSON.stringify(assistantProfile)}\nData aspirasi yang boleh diketahui pengguna ini: ${JSON.stringify(reportContext)}\n\nPertanyaan: ${message}`,
-        });
+        const result = await withTimeout(
+          ai.models.generateContent({
+            model: "gemini-3.5-flash-lite",
+            config: {
+              abortSignal: AbortSignal.timeout(12000),
+            },
+            contents: `Kamu asisten layanan warga Desa ${assistantProfile.namaDesa}. Jawab singkat, sopan, dalam Bahasa Indonesia. Jangan mengarang kebijakan/nomor kontak. Jika data tidak tersedia, katakan demikian.\nPengguna ini adalah ${adminScope ? "ADMIN desa: boleh merangkum data internal secara lengkap, boleh membantu menyusun draf tanggapan resmi dan draf berita." : "WARGA biasa: hanya jelaskan cara memakai layanan dan informasi umum."}\nProfil desa: ${JSON.stringify(assistantProfile)}\nData aspirasi yang boleh diketahui pengguna ini: ${JSON.stringify(reportContext)}\n\nPertanyaan: ${message}`,
+          }),
+          "Asisten AI",
+          12000,
+        );
         if (result.text?.trim()) return sendJson(response, 200, { reply: result.text.trim(), mode: "ai" });
       } catch (error) {
-        console.error("Asisten AI gagal menjawab:", error.message);
+        console.error("Asisten AI gagal menjawab:", error.message || error);
       }
     }
     const normalized = message.toLowerCase();
