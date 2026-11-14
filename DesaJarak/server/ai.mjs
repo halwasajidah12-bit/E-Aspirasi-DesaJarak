@@ -4,9 +4,9 @@
 // laporan tidak boleh gagal karena AI.
 
 const DEFAULT_TIMEOUT_MS = 15_000;
-export const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.0-flash"; 
+export const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 
-const withTimeout = async (promise, label, timeoutMs = DEFAULT_TIMEOUT_MS) => {
+export const withTimeout = async (promise, label, timeoutMs = DEFAULT_TIMEOUT_MS) => {
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => reject(new Error(`${label} melebihi batas ${timeoutMs} ms.`)), timeoutMs);
@@ -48,7 +48,7 @@ export const classifyReportWithGemini = async (
 Klasifikasikan laporan masyarakat berikut ke dalam tepat satu kategori.
 
 Kategori yang tersedia (pilih HANYA dari daftar ini):
-${allowedCategories.map((category) => `- ${category}`).join("\n")}
+${allowedCategories.map((category) => `- \${category}`).join("\n")}
 
 Judul laporan: "${title}"
 Deskripsi laporan: "${description}"
@@ -57,7 +57,7 @@ Balas HANYA dengan nama kategorinya, tanpa penjelasan dan tanpa tanda kutip.`,
       }),
       "Gemini classification",
     );
-    const category = String(result.text || "").trim().replace(/^["']|["']$/g, "");
+    const category = String(result.text || "").trim().replace(/^["']|["']\$/g, "");
     return allowedCategories.includes(category) ? category : null;
   } catch (error) {
     console.error("Gemini classification gagal:", error.message);
@@ -155,7 +155,7 @@ Sertakan HANYA kandidat yang benar-benar duplikat. Jika tidak ada yang duplikat,
       "Gemini duplicate verification",
       timeoutMs,
     );
-    const text = String(result.text || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+    const text = String(result.text || "").trim().replace(/^```(?:json)?/i, "").replace(/```\$/, "").trim();
     const start = text.indexOf("[");
     const end = text.lastIndexOf("]");
     if (start === -1 || end === -1 || end <= start) return [];
@@ -225,7 +225,7 @@ Analisis komentar tersebut lalu balas HANYA JSON, tanpa penjelasan:
       "Gemini comment analysis",
       timeoutMs,
     );
-    const text = String(result.text || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+    const text = String(result.text || "").trim().replace(/^```(?:json)?/i, "").replace(/```\$/, "").trim();
     const start = text.indexOf("{");
     const end = text.lastIndexOf("}");
     if (start === -1 || end === -1 || end <= start) return null;
@@ -303,7 +303,7 @@ Balas HANYA JSON array, tanpa penjelasan:
       "Gemini priorities summary",
       timeoutMs,
     );
-    const text = String(result.text || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+    const text = String(result.text || "").trim().replace(/^```(?:json)?/i, "").replace(/```\$/, "").trim();
     const start = text.indexOf("[");
     const end = text.lastIndexOf("]");
     if (start === -1 || end === -1 || end <= start) return [];
