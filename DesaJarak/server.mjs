@@ -10,7 +10,6 @@ import { GoogleGenAI } from "@google/genai";
 import { OAuth2Client } from "google-auth-library";
 import multer from "multer";
 import webPush from "web-push";
-
 import {
   initialProfilDesa,
   initialReports,
@@ -115,11 +114,11 @@ const googleAuthClient = new OAuth2Client();
 const rawToken = process.env.GEMINI_API_KEY;
 const token = rawToken ? String(rawToken).trim().replace(/^["']|["']$/g, "") : "";
 
-let ai = null; 
+let ai = null;
 if (!token) {
   console.warn("GEMINI_API_KEY not set - AI classification will fail.");
 } else {
-  ai = new GoogleGenAI({ apiKey: token }); 
+  ai = new GoogleGenAI({ apiKey: token });
 }
 
 const normalizeSslMode = (value) => String(value || "").trim().toLowerCase();
@@ -152,13 +151,15 @@ const analyzeReportPriorityWithGemini = async ({
       String(comment.text || "")
     );
 
-    const result = await withTimeout(
-      ai.models.generateContent({
-        model: "gemini-3.5-flash-lite",
-        config: {
-          abortSignal: AbortSignal.timeout(12000),
-        },
-        contents: `
+
+const result = await withTimeout(
+  ai.models.generateContent({
+    model: DEFAULT_GEMINI_MODEL,
+    config: {
+      abortSignal: AbortSignal.timeout(12000),
+    },
+    contents: `
+
 Kamu adalah AI analis laporan pelayanan masyarakat desa.
 
 Analisis laporan berikut untuk menentukan tingkat prioritas penanganan.
@@ -509,12 +510,7 @@ const findPossibleDuplicate = (newReport, reports = []) => {
 };
 
 const calculateReportPriority = ({ report, votes = 0, comments = 0 }) => {
-  // Laporan yang mengandung kondisi berbahaya langsung diprioritaskan
-  if (detectReportUrgency(report)) {
-    return "Tinggi";
-  }
-
-  // Berdasarkan dukungan dan komentar warga
+  // Prioritas ditentukan berdasarkan dukungan dan komentar warga.
   if (votes >= 10 || comments >= 5) {
     return "Tinggi";
   }
@@ -523,8 +519,9 @@ const calculateReportPriority = ({ report, votes = 0, comments = 0 }) => {
     return "Sedang";
   }
 
-  return "Rendah";
+  return "Biasa";
 };
+
 
 const recordNotification = async ({ title, description, icon, color, action, eventKey = null }) => {
   const result = await pool.query(
@@ -1420,6 +1417,7 @@ const handleApi = async (request, response, url) => {
     });
   }
 
+
   if (request.method === "POST" && pathname === "/api/assistant") {
     const body = await readJson(request);
     const message = String(body.message || "").trim().slice(0, 1000);
@@ -1441,17 +1439,19 @@ const handleApi = async (request, response, url) => {
     };
     if (ai) {
       try {
-        const result = await withTimeout(
-          ai.models.generateContent({
-            model: "gemini-3.5-flash-lite",
-            config: {
-              abortSignal: AbortSignal.timeout(12000),
-            },
-            contents: `Kamu asisten layanan warga Desa ${assistantProfile.namaDesa}. Jawab singkat, sopan, dalam Bahasa Indonesia. Jangan mengarang kebijakan/nomor kontak. Jika data tidak tersedia, katakan demikian.\nPengguna ini adalah ${adminScope ? "ADMIN desa: boleh merangkum data internal secara lengkap, boleh membantu menyusun draf tanggapan resmi dan draf berita." : "WARGA biasa: hanya jelaskan cara memakai layanan dan informasi umum."}\nProfil desa: ${JSON.stringify(assistantProfile)}\nData aspirasi yang boleh diketahui pengguna ini: ${JSON.stringify(reportContext)}\n\nPertanyaan: ${message}`,
-          }),
-          "Asisten AI",
-          12000,
-        );
+
+const result = await awaitTimeout(
+  ai.models.generateContent({
+    model: DEFAULT_GEMINI_MODEL,
+    config: {
+      abortSignal: AbortSignal.timeout(12000),
+    },
+    contents: `Kamu asisten layanan warga Desa ${assistantProfile.namaDesa}. Jawab singkat, sopan, dalam Bahasa Indonesia. Jangan mengarang kebijakan/nomor kontak. Jika data tidak tersedia, katakan demikian.\nPengguna ini adalah ${adminScope ? "ADMIN desa: boleh merangkum data internal secara lengkap, boleh membantu menyusun draf tanggapan resmi dan draf berita." : "WARGA biasa: hanya jelaskan cara memakai layanan dan informasi umum."}\nProfil desa: ${JSON.stringify(assistantProfile)}\nData aspirasi yang boleh diketahui pengguna ini: ${JSON.stringify(reportContext)}\n\nPertanyaan: ${message}`,
+  }),
+  "Asisten AI",
+  12000,
+);
+
         if (result.text?.trim()) return sendJson(response, 200, { reply: result.text.trim(), mode: "ai" });
       } catch (error) {
         console.error("Asisten AI gagal menjawab:", error.message || error);
@@ -1608,11 +1608,11 @@ const handleApi = async (request, response, url) => {
         ownerId: principal.username,
         ownerName: principal.fullname || principal.nama || "Warga Desa",
         visibility: otherCategory ? "admin" : "public",
-        category: otherCategory ? customCategory : categoryMap[selectedCategory] || selectedCategory || "Lainnya",
+        category: aiCategory || ( otherCategory? customCategory: categoryMap[selectedCategory] || selectedCategory || "Lainnya"),
         ...(otherCategory ? { categoryGroup: "Lainnya" } : {}),
         aiCategory: aiCategory || "Belum diklasifikasi" ,
         status: "Masuk",
-        urgency: detectReportUrgency({ title: body.judul, description: body.deskripsi }) ? "Tinggi" : "Sedang",
+        urgency: "Biasa",
         votes: 0,
         comments: 0,
         image: body.image || "",
@@ -2325,6 +2325,7 @@ const next = {
     );
 
     const user = result.rows[0];
+
     let isAuthenticated = false;
 
     if (user) {
@@ -2492,9 +2493,14 @@ connectDatabase()
     pool = databasePool;
     return initDatabase();
   })
+  connectDatabase()
+  .then((databasePool) => {
+    pool = databasePool;
+    return initDatabase();
+  })
   .then(() => {
     server.listen(port, "0.0.0.0", () => {
-      console.log(`Berhasil terhubung ke database PostgreSQL!`);
+      console.log("Berhasil terhubung ke database PostgreSQL!");
       console.log(`E-Aspirasi listening on port ${port}`);
     });
   })

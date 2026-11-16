@@ -39,8 +39,14 @@ export default function App() {
   }, [])
 
   const startSession = (result) => {
-    setSession(result)
-    setScreen(result.role === 'admin' ? 'admin' : 'user')
+    console.log("HASIL LOGIN:", {
+    role: result.role,
+    name: result.name,
+    userId: result.userId
+  })
+
+  setSession(result)
+  setScreen(result.role === 'admin' ? 'admin' : 'user')
   }
 
   const handleLogin = async (credentials) => {
