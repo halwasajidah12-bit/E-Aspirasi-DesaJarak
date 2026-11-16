@@ -1576,6 +1576,7 @@ const result = await awaitTimeout(
       description: body.deskripsi,
       allowedCategories,
     });
+    console.log("[AI DEBUG] Hasil klasifikasi:", aiCategory);
     const now = new Date();
     const categoryMap = {
       Jalan: "Jalan & Fasilitas",

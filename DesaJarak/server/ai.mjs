@@ -37,7 +37,7 @@ export const classifyReportWithGemini = async (
     title = "",
     description = "",
     allowedCategories = fallbackCategories,
-    model = "gemini-3.5-flash-lite",
+    model = DEFAULT_GEMINI_MODEL,
   } = {},
 ) => {
   if (!ai || !String(description).trim()) return null;
@@ -61,9 +61,9 @@ Balas HANYA dengan nama kategorinya, tanpa penjelasan dan tanpa tanda kutip.`,
     const category = String(result.text || "").trim().replace(/^["']|["']\$/g, "");
     return allowedCategories.includes(category) ? category : null;
   } catch (error) {
-    console.error("Gemini classification gagal:", error.message);
-    return null;
-  }
+  console.error("[AI DEBUG] Gemini classification gagal:", error);
+  return null;
+}
 };
 
 // ==== DETEKSI DUPLIKASI ====
