@@ -325,14 +325,12 @@ const connectDatabase = async () => {
     error.code = "DB_CONFIG_MISSING";
     throw error;
   }
-
   const failures = [];
   for (const candidate of candidates) {
     if (candidate.configError) {
       failures.push(`${candidate.label}: ${candidate.configError}`);
       continue;
     }
-
     for (let attempt = 1; attempt <= databaseConnectAttempts; attempt += 1) {
       const candidatePool = createPool(candidate.config);
       try {
@@ -355,7 +353,6 @@ const connectDatabase = async () => {
       }
     }
   }
-
   const error = new Error(
     `Gagal terhubung ke database setelah mencoba ${candidates.length} konfigurasi koneksi.`,
   );
@@ -369,7 +366,6 @@ const categoryNames = [
   "Pedoman Aspirasi",
   "Syarat dan Ketentuan",
 ];
-
 const removeEducationIcons = (value) => {
   if (Array.isArray(value)) return value.map(removeEducationIcons);
   if (!value || typeof value !== "object") return value;
@@ -1416,7 +1412,54 @@ const handleApi = async (request, response, url) => {
       category: category || "Belum diklasifikasi",
     });
   }
+  if (
+  request.method === "POST" &&
+  pathname === "/api/ai/analyze-comments"
+ )  {
+  if (!isAdmin(principal)) {
+    return sendJson(response, 403, {
+      message: "Akses admin diperlukan.",
+    });
+  }
+  const body = await readJson(request);
+  const reportId = String(body.reportId || "").trim();
+  if (!reportId) {
+    return sendJson(response, 400, {
+      message: "ID laporan wajib diisi.",
+    });
+  }
 
+  const result = await pool.query(
+    "SELECT data_value FROM app_data WHERE data_key = $1",
+    ["reports"]
+  );
+
+  const reports = result.rows[0]?.data_value || [];
+
+  const report = reports.find(
+    (item) => String(item.id) === reportId
+  );
+
+  if (!report) {
+    return sendJson(response, 404, {
+      message: "Laporan tidak ditemukan.",
+    });
+  }
+
+  const analysis = await analyzeCommentsWithGemini(ai, {
+    title: report.title,
+    description: report.description,
+    comments: report.commentsList || [],
+  });
+
+  if (!analysis) {
+    return sendJson(response, 502, {
+      message: "Analisis komentar gagal.",
+    });
+  }
+
+  return sendJson(response, 200, analysis);
+}
 
   if (request.method === "POST" && pathname === "/api/assistant") {
     const body = await readJson(request);
@@ -1440,7 +1483,7 @@ const handleApi = async (request, response, url) => {
     if (ai) {
       try {
 
-const result = await awaitTimeout(
+const result = await withTimeout(
   ai.models.generateContent({
     model: DEFAULT_GEMINI_MODEL,
     config: {
@@ -1451,7 +1494,6 @@ const result = await awaitTimeout(
   "Asisten AI",
   12000,
 );
-
         if (result.text?.trim()) return sendJson(response, 200, { reply: result.text.trim(), mode: "ai" });
       } catch (error) {
         console.error("Asisten AI gagal menjawab:", error.message || error);
@@ -2285,7 +2327,8 @@ const next = {
   if (request.method === "POST" && (pathname === "/api/auth/login" || pathname === "/api/auth/register")) {
     const body = await readJson(request);
     const identifier = String(body.username || body.email || "").trim();
-    const password = String(body.password || "");
+
+  const password = String(body.password || "");
 
     if (!identifier || !password) {
       return sendJson(response, 400, { message: "Username/Email dan password wajib diisi." });
