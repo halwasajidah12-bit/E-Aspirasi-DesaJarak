@@ -1412,8 +1412,7 @@ const handleApi = async (request, response, url) => {
       category: category || "Belum diklasifikasi",
     });
   }
-  if (
-  request.method === "POST" &&
+  if (request.method === "POST" &&
   pathname === "/api/ai/analyze-comments"
  )  {
   if (!isAdmin(principal)) {

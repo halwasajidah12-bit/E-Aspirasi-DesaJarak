@@ -4,9 +4,7 @@
 // laporan tidak boleh gagal karena AI.
 
 const DEFAULT_TIMEOUT_MS = 45_000;
-
 export const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
-
 export const withTimeout = async (promise, label, timeoutMs = DEFAULT_TIMEOUT_MS) => {
   let timer;
   const timeout = new Promise((_, reject) => {
@@ -31,6 +29,7 @@ export const fallbackCategories = [
 // Klasifikasi laporan ke satu kategori dari daftar yang diberikan (source of
 // truth: tabel kategori_infrastruktur). Hasil selalu divalidasi terhadap daftar —
 // kategori di luar daftar dibuang agar tidak bocor ke sistem.
+
 export const classifyReportWithGemini = async (
   ai,
   {
@@ -38,33 +37,202 @@ export const classifyReportWithGemini = async (
     description = "",
     allowedCategories = fallbackCategories,
     model = DEFAULT_GEMINI_MODEL,
-  } = {},
+  } = {}
 ) => {
-  if (!ai || !String(description).trim()) return null;
-  try {
-    const result = await withTimeout(
-      ai.models.generateContent({
-        model,
-        contents: `
-Klasifikasikan laporan masyarakat berikut ke dalam tepat satu kategori.
+  const categories =
+    Array.isArray(allowedCategories) && allowedCategories.length
+      ? allowedCategories
+      : fallbackCategories;
 
-Kategori yang tersedia (pilih HANYA dari daftar ini):
-${allowedCategories.map((category) => `- \${category}`).join("\n")}
+  const normalize = (value) =>
+    String(value || "")
+      .normalize("NFKC")
+      .toLocaleLowerCase("id-ID")
+      .trim();
 
-Judul laporan: "${title}"
-Deskripsi laporan: "${description}"
+  // Mencari kategori yang benar-benar tersedia.
+  const findCategory = (value) =>
+    categories.find(
+      (item) => normalize(item) === normalize(value)
+    ) || null;
 
-Balas HANYA dengan nama kategorinya, tanpa penjelasan dan tanpa tanda kutip.`,
-      }),
-      "Gemini classification",
-    );
-    const category = String(result.text || "").trim().replace(/^["']|["']\$/g, "");
-    return allowedCategories.includes(category) ? category : null;
-  } catch (error) {
-  console.error("[AI DEBUG] Gemini classification gagal:", error);
-  return null;
-}
+  // Klasifikasi lokal jika Gemini gagal.
+  const classifyLocally = () => {
+    const text = normalize(`${title} ${description}`);
+
+    const rules = [
+      {
+        category: "Jalan & Fasilitas",
+        keywords: [
+          "jalan berlubang",
+          "lubang jalan",
+          "lubang besar",
+          "jalan rusak",
+          "aspal rusak",
+          "jembatan",
+          "trotoar",
+          "jalan amblas",
+          "jalan retak",
+        ],
+      },
+      {
+        category: "Penerangan",
+        keywords: [
+          "lampu jalan",
+          "lampu penerangan",
+          "lampu mati",
+          "lampu rusak",
+          "penerangan",
+          "gelap",
+          "tiang lampu",
+        ],
+      },
+      {
+        category: "Lingkungan",
+        keywords: [
+          "sampah",
+          "banjir",
+          "limbah",
+          "pencemaran",
+          "selokan",
+          "drainase",
+          "pohon tumbang",
+          "bau menyengat",
+        ],
+      },
+    ];
+
+    const scores = rules.map((rule) => ({
+      category: rule.category,
+      score: rule.keywords.reduce(
+        (total, keyword) =>
+          total + (text.includes(keyword) ? 1 : 0),
+        0
+      ),
+    }));
+
+    scores.sort((a, b) => b.score - a.score);
+
+    if (scores[0]?.score > 0) {
+      const matched = findCategory(scores[0].category);
+
+      if (matched) {
+        console.log("[AI DEBUG] Klasifikasi lokal:", matched);
+        return matched;
+      }
+    }
+
+    const other = findCategory("Lainnya");
+
+    console.log("[AI DEBUG] Fallback kategori:", other);
+
+    return other;
+  };
+
+  console.log("[AI DEBUG] Gemini tersedia:", Boolean(ai));
+  console.log(
+    "[AI DEBUG] Deskripsi tersedia:",
+    Boolean(String(description).trim())
+  );
+  console.log("[AI DEBUG] Kategori tersedia:", categories);
+
+  if (!String(description).trim()) return null;
+
+  // Jika Gemini tidak tersedia, langsung gunakan fallback.
+  if (!ai) return classifyLocally();
+
+  // Maksimal 3 percobaan: 1 percobaan awal + 2 retry.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      console.log(
+        `[AI DEBUG] Percobaan Gemini ${attempt + 1}/3`
+      );
+
+      const result = await withTimeout(
+        ai.models.generateContent({
+          model,
+          contents: `
+Kamu adalah AI yang bertugas mengklasifikasikan laporan masyarakat Desa Jarak.
+
+TUGAS:
+Tentukan kategori berdasarkan JUDUL dan DESKRIPSI laporan.
+Jangan mengikuti kategori pilihan warga jika tidak sesuai.
+
+DAFTAR KATEGORI:
+${categories.map((category) => `- ${category}`).join("\n")}
+
+JUDUL:
+${title}
+
+DESKRIPSI:
+${description}
+
+ATURAN:
+1. Jalan berlubang, jalan rusak, jembatan rusak masuk "Jalan & Fasilitas".
+2. Lampu jalan mati dan masalah pencahayaan masuk "Penerangan".
+3. Sampah, banjir, limbah, dan pencemaran masuk "Lingkungan".
+4. Masalah lainnya masuk "Lainnya".
+5. Pilih tepat satu kategori.
+6. Jangan membuat kategori baru.
+
+Balas HANYA dengan nama kategori yang tersedia.
+          `,
+        }),
+        "Gemini classification",
+        DEFAULT_TIMEOUT_MS
+      );
+
+      const rawCategory = String(result.text || "")
+        .trim()
+        .replace(/^```(?:text)?/i, "")
+        .replace(/```$/i, "")
+        .trim()
+        .replace(/^["'`]|["'`]$/g, "")
+        .replace(/[.!]+$/, "")
+        .trim();
+
+      console.log(
+        "[AI DEBUG] Respons mentah Gemini:",
+        rawCategory
+      );
+
+      const matchedCategory = findCategory(rawCategory);
+
+      if (matchedCategory) {
+        console.log(
+          "[AI DEBUG] Hasil klasifikasi Gemini:",
+          matchedCategory
+        );
+
+        return matchedCategory;
+      }
+
+      console.warn(
+        "[AI DEBUG] Respons Gemini tidak cocok dengan kategori."
+      );
+
+      break;
+    } catch (error) {
+      console.error(
+        `[AI DEBUG] Gemini gagal pada percobaan ${attempt + 1}:`,
+        error.message
+      );
+
+      if (attempt < 2) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, 1500 * (attempt + 1))
+        );
+      }
+    }
+  }
+
+  console.warn(
+    "[AI DEBUG] Gemini gagal. Menggunakan klasifikasi lokal."
+  );
+
+  return classifyLocally();
 };
+
 
 // ==== DETEKSI DUPLIKASI ====
 // Level murah (tanpa LLM): kesamaan token deskripsi/judul + lokasi + RT/RW.
