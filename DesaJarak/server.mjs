@@ -156,7 +156,7 @@ const result = await withTimeout(
   ai.models.generateContent({
     model: DEFAULT_GEMINI_MODEL,
     config: {
-      abortSignal: AbortSignal.timeout(12000),
+      abortSignal: AbortSignal.timeout(30000),
     },
     contents: `
 
@@ -200,7 +200,7 @@ Balas HANYA dalam format JSON:
 `,
       }),
       "Gemini analisis prioritas",
-      12000,
+      30000,
     );
 
     const text = result.text.trim()
